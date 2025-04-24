@@ -1,0 +1,6 @@
+*target
+*:Zone.Identifier
+venv
+.venv
+.env
+.vscode

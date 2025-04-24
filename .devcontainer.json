@@ -1,0 +1,20 @@
+{
+    "name": "Orchestrator dev",
+    "build" : {
+      "dockerfile": ".devcontainer.Dockerfile",
+      "context": "."
+    },
+    "runArgs": [
+      "--network=wasmiot-net",
+      "--name=orchestrator-dev"
+    ],
+    "customizations": {
+      "vscode": {
+        "extensions": [
+          "rust-lang.rust-analyzer",
+          "tamasfe.even-better-toml"
+        ]
+      }
+    }
+  } 
+  
