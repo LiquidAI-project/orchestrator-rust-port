@@ -4,3 +4,7 @@ venv
 .venv
 .env
 .vscode
+
+# Added by cargo
+
+/target

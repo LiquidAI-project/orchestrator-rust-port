@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+
+[package]
+name = "orchestrator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+actix-web = "4.10.2"
+actix-multipart = "0.7.2"
+futures-util = "0.3.31"
+mongodb = "3.2.3"
+tokio = "1.44.2"
+futures = "0.3.31"
+serde = "1.0.219"
+serde_json = "1.0.140"
+supervisor = { git = "https://github.com/LiquidAI-project/supervisor-rust-port.git", branch = "main" }
+
+[features]
+
+[profile.release]
+strip = true
