@@ -20,6 +20,8 @@ services:
   mongo:
     image: mongo
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:27017:27017"
     networks:
       default:
         ipv4_address: 172.15.0.2

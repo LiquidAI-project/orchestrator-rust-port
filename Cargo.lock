@@ -3400,9 +3400,11 @@ version = "0.1.0"
 dependencies = [
  "actix-multipart 0.7.2",
  "actix-web",
+ "dotenv",
  "futures",
  "futures-util",
  "mongodb",
+ "once_cell",
  "serde",
  "serde_json",
  "supervisor",

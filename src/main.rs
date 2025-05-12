@@ -1,9 +1,11 @@
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use serde_json::json;
 use supervisor;
+use mongodb::Client;
+use orchestrator::lib::mongodb::initialize_client;
 
 // Placeholder handler
-async fn placeholder(req: HttpRequest) -> impl Responder {
+async fn placeholder(_client: web::Data<Client>, req: HttpRequest) -> impl Responder {
     let match_name = req.match_name().unwrap_or("<no match name>");
     let match_pattern = req.match_pattern().unwrap_or("<no match pattern>".to_string());
     HttpResponse::Ok().json(json!({
@@ -18,8 +20,13 @@ async fn main() -> std::io::Result<()> {
 
     println!("Starting orchestrator at http://localhost:3000");
 
-    HttpServer::new(|| {
+    let client = initialize_client().await.expect("Failed to initialize MongoDB client");
+
+    HttpServer::new(move || {
         App::new()
+
+            // Add the client so it can be used in every route
+            .app_data(web::Data::new(client.clone()))
 
             // "Core" services of the orchestrator (file: routes/coreServices)
             // Status of implementations:
