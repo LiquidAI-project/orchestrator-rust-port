@@ -4,4 +4,5 @@ FROM mcr.microsoft.com/vscode/devcontainers/rust:latest
 RUN apt-get update && apt-get install -y \
     pkg-config \
     cmake \
-    build-essential 
+    build-essential \
+    clang

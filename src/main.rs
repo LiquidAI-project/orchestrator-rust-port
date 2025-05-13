@@ -8,11 +8,8 @@ use orchestrator::lib::mongodb::initialize_client;
 async fn placeholder(_client: web::Data<Client>, req: HttpRequest) -> impl Responder {
     let match_name = req.match_name().unwrap_or("<no match name>");
     let match_pattern = req.match_pattern().unwrap_or("<no match pattern>".to_string());
-    HttpResponse::Ok().json(json!({
-        "url" : req.full_url().as_str(),
-        "match_name" : match_name,
-        "match_pattern" : match_pattern
-    }))
+    println!("{}, {}, {}", req.full_url().as_str(), match_name, match_pattern);
+    HttpResponse::Ok().json(json!([]))
 }
 
 #[actix_web::main]
@@ -192,6 +189,9 @@ async fn main() -> std::io::Result<()> {
             // ❌ POST /postResult
             .service(web::resource("/postResult").name("/postResult")
                 .route(web::post().to(placeholder))) // For posting intermediary results in a longer chain of functions/modules
+
+            // Serve frontend static files
+            .service(actix_files::Files::new("/", "./static/frontend").index_file("index.html"))
             
     })
     .bind(("0.0.0.0", 3000))?

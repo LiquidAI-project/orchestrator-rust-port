@@ -8,8 +8,8 @@ pub async fn initialize_client() -> Result<Client> {
 
     let host = env::var("MONGO_HOST").expect("MONGO_HOST not set");
     let port = env::var("MONGO_PORT").expect("MONGO_PORT not set");
-    let user = env::var("MONGO_USER").expect("MONGO_USER not set");
-    let pass = env::var("MONGO_PASS").expect("MONGO_PASS not set");
+    let user = env::var("MONGO_ROOT_USERNAME").expect("MONGO_ROOT_USERNAME not set");
+    let pass = env::var("MONGO_ROOT_PASSWORD").expect("MONGO_ROOT_PASSWORD not set");
 
     let uri = format!("mongodb://{}:{}@{}:{}/", user, pass, host, port);
     let options = ClientOptions::parse(&uri).await?;

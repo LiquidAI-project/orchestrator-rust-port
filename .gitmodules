@@ -1,0 +1,3 @@
+[submodule "wasmiot-orchestrator-webgui"]
+	path = wasmiot-orchestrator-webgui
+	url = git@github.com:LiquidAI-project/wasmiot-orchestrator-webgui.git
