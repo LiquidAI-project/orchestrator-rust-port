@@ -6,15 +6,22 @@
     },
     "runArgs": [
       "--network=wasmiot-net",
-      "--name=orchestrator-dev"
+      "--name=orchestrator-dev",
+      "--device=/dev/video0:/dev/video0",
+      "--privileged"
     ],
     "customizations": {
       "vscode": {
         "extensions": [
           "rust-lang.rust-analyzer",
-          "tamasfe.even-better-toml"
+          "tamasfe.even-better-toml",
+          "irongeek.vscode-env",
+          "eamodio.gitlens",
+          "redhat.vscode-yaml"
         ]
       }
-    }
+    },
+    "postCreateCommand": "bash .devcontainer-setup.sh"
   } 
+
   

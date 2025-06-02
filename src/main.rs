@@ -191,7 +191,7 @@ async fn main() -> std::io::Result<()> {
                 .route(web::post().to(placeholder))) // For posting intermediary results in a longer chain of functions/modules
 
             // Serve frontend static files
-            .service(actix_files::Files::new("/", "./static/frontend").index_file("index.html"))
+            .service(actix_files::Files::new("/", "./build/frontend").index_file("index.html"))
             
     })
     .bind(("0.0.0.0", 3000))?

@@ -1,0 +1,32 @@
+services:
+  supervisor:
+    tty: true # Makes log level colors visible
+    build:
+      context: ./supervisor-rust-port
+      dockerfile: Dockerfile 
+    container_name: rust_supervisor
+    ports:
+      - "3005:8080"
+    privileged: true
+    env_file: .env
+    volumes:
+      - ./instance/configs:/app/instance/configs
+      - ./instance/modules:/app/instance/modules
+      - ./instance/output:/app/instance/output
+    networks:
+      - wasmiot-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 1m30s
+      timeout: 30s
+      retries: 3
+      start_period: 30s
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 250M
+
+networks:
+  wasmiot-net:
+    external: true
+

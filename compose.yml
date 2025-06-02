@@ -2,16 +2,20 @@
 services:
   orchestrator:
     tty: true
-    build: .
+    build:
+      context: .
+      args:
+        REACT_APP_API_URL: ${REACT_APP_API_URL}
+        PORT: ${PORT}
     container_name: rust_orchestrator
     ports:
       - "3000:3000"
     env_file: .env
     networks:
       default:
-        ipv4_address: 172.15.0.25
+        ipv4_address: 172.16.0.25
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:3300/health"]
       interval: 15s
       timeout: 30s
       retries: 3
@@ -24,7 +28,7 @@ services:
       - "127.0.0.1:27017:27017"
     networks:
       default:
-        ipv4_address: 172.15.0.2
+        ipv4_address: 172.16.0.2
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
@@ -44,4 +48,4 @@ networks:
     ipam:
       driver: default
       config:
-        - subnet: 172.15.0.0/24
+        - subnet: 172.16.0.0/24

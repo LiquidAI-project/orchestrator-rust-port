@@ -5,6 +5,9 @@ venv
 .env
 .vscode
 package-lock.json
+mongo-data
+*.conf
+build
 
 # Added by cargo
 

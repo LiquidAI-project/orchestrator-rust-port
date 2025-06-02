@@ -1,0 +1,24 @@
+version: "3.8"
+
+services:
+
+  mongo-express:
+    image: mongo-express
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5000:3313"
+    networks:
+      - wasmiot-net
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_ROOT_USERNAME:-admin}
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_ROOT_PASSWORD:-password}
+      ME_CONFIG_BASICAUTH_USERNAME: ${MONGO_EXPRESS_USER:-admin}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${MONGO_EXPRESS_PASS:-admin}
+    env_file:
+      - ./.env
+
+networks:
+  wasmiot-net:
+    external: true
