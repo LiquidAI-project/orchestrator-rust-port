@@ -19,4 +19,5 @@ pub mod lib {
     pub mod dependency_tree;
     pub mod servapp;
     pub mod mongodb;
+    pub mod zeroconf;
 }

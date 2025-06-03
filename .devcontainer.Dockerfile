@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y \
     libxcb-xfixes0-dev \
     clang \
     avahi-daemon \
+    avahi-utils \
     libavahi-client-dev \
     dbus \
     curl \

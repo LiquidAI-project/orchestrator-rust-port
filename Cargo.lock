@@ -3546,18 +3546,22 @@ dependencies = [
 name = "orchestrator"
 version = "0.1.0"
 dependencies = [
+ "actix-cors",
  "actix-files",
  "actix-multipart 0.7.2",
  "actix-web",
  "dotenv",
+ "env_logger",
  "futures",
  "futures-util",
+ "log",
  "mongodb",
  "once_cell",
  "serde",
  "serde_json",
  "supervisor",
  "tokio",
+ "zeroconf",
 ]
 
 [[package]]

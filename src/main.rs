@@ -1,8 +1,11 @@
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use serde_json::json;
 use supervisor;
+use supervisor::lib::zeroconf as zeroconf;
 use mongodb::Client;
+use actix_cors::Cors;
 use orchestrator::lib::mongodb::initialize_client;
+use log::{info, warn, error};
 
 // Placeholder handler
 async fn placeholder(_client: web::Data<Client>, req: HttpRequest) -> impl Responder {
@@ -15,12 +18,48 @@ async fn placeholder(_client: web::Data<Client>, req: HttpRequest) -> impl Respo
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
 
-    println!("Starting orchestrator at http://localhost:3000");
+    println!("Orchestrator starting...");
 
+    // Load enviroment variables from .env if available
+    match dotenv::dotenv() {
+        Ok(path) => info!("Loaded .env from {:?}", path),
+        Err(err) => warn!("Could not load .env file: {:?}", err),
+    }
+
+    // Initialize logging with default level = info (unless overridden by env)
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Initialize MongoDB client.
     let client = initialize_client().await.expect("Failed to initialize MongoDB client");
+
+    // Start advertising orchestrator via mdns
+    let zc = zeroconf::WebthingZeroconf::new();
+    if let Err(e) = zeroconf::register_service(zc) {
+        error!("Failed to start mDNS listener: {}", e);
+    } else {
+        info!("Mdns listener started succesfully.");
+    }
+
+    // Start mdns listener/browser to get available devices/services
+    if let Err(e) = orchestrator::lib::zeroconf::browse_services() {
+        error!("Failed to start mDNS browser: {}", e);
+    } else {
+        info!("Mdns browser started succesfully.");
+    }
 
     HttpServer::new(move || {
         App::new()
+            // Add cors and a logger
+            .wrap(
+                Cors::default()
+                    .allow_any_origin()
+                    .allow_any_method()
+                    .allow_any_header()
+                    .max_age(3600)
+            )
+            .wrap(
+                actix_web::middleware::Logger::default()
+            )
 
             // Add the client so it can be used in every route
             .app_data(web::Data::new(client.clone()))
