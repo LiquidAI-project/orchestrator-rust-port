@@ -81,17 +81,35 @@ fi
 echo "🦀 Building Rust backend..."
 if [[ "$RELEASE_MODE" == true ]]; then
   cargo build --release
-  BIN_PATH="./target/release/orchestrator"
+  cp ./target/release/orchestrator ./build/orchestrator
 else
   cargo build
-  BIN_PATH="./target/debug/orchestrator"
+  cp ./target/debug/orchestrator ./build/orchestrator
 fi
+
+# Copy other necessary files into build folder
+cp .env ./build/.env
+cp entrypoint.sh ./build/entrypoint.sh
 
 # === Step 3: Run backend ===
 
 if [[ "$NO_RUN" == true ]]; then
   echo "✅ Build completed. Skipping run (--no-run)."
 else
+
   echo "🚀 Starting orchestrator on port $PORT..."
-  exec "$BIN_PATH"
+
+  # Check required binaries
+  if ! command -v dbus-daemon >/dev/null 2>&1; then
+    echo "❌ Missing: dbus-daemon. Orchestrator cannot run without it."
+    exit 1
+  fi
+  if ! command -v avahi-daemon >/dev/null 2>&1; then
+    echo "❌ Missing: avahi-daemon. Orchestrator cannot run without it."
+    exit 1
+  fi
+
+  cd build
+  ./entrypoint.sh
+
 fi

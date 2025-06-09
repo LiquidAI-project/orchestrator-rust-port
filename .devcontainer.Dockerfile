@@ -13,7 +13,6 @@ RUN apt-get update && apt-get install -y \
     xorg-dev \
     libxcb-shape0-dev \
     libxcb-xfixes0-dev \
-    clang \
     avahi-daemon \
     avahi-utils \
     libavahi-client-dev \
