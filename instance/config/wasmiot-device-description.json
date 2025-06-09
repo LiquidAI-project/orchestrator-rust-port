@@ -1,0 +1,15 @@
+{
+    "platform": {
+        "memory": {
+            "bytes": null
+        },
+        "cpu": {
+            "humanReadableName": null,
+            "clockSpeed": {
+                "Hz": null
+            }
+        }
+    },
+    "supervisorInterfaces": [
+    ]
+}

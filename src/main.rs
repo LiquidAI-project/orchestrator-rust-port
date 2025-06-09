@@ -1,10 +1,14 @@
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use serde_json::json;
-use supervisor;
-use supervisor::lib::zeroconf as zeroconf;
 use mongodb::Client;
 use actix_cors::Cors;
 use orchestrator::lib::mongodb::initialize_client;
+use orchestrator::api::device::{
+    wasmiot_device_description, 
+    thingi_description,
+    thingi_health
+};
+use orchestrator::lib::zeroconf;
 use log::{info, warn, error};
 
 // Placeholder handler
@@ -32,19 +36,19 @@ async fn main() -> std::io::Result<()> {
     // Initialize MongoDB client.
     let client = initialize_client().await.expect("Failed to initialize MongoDB client");
 
-    // Start advertising orchestrator via mdns
+    // Start mdns browser to start polling for available supervisors
+    if let Err(e) = zeroconf::browse_services() {
+        error!("Failed to start mDNS browser: {}", e);
+    } else {
+        info!("Mdns browser started succesfully.");
+    }
+
+    // Start advertising orchestrator to itself via mdns
     let zc = zeroconf::WebthingZeroconf::new();
     if let Err(e) = zeroconf::register_service(zc) {
         error!("Failed to start mDNS listener: {}", e);
     } else {
         info!("Mdns listener started succesfully.");
-    }
-
-    // Start mdns listener/browser to get available devices/services
-    if let Err(e) = orchestrator::lib::zeroconf::browse_services() {
-        error!("Failed to start mDNS browser: {}", e);
-    } else {
-        info!("Mdns browser started succesfully.");
     }
 
     HttpServer::new(move || {
@@ -71,13 +75,13 @@ async fn main() -> std::io::Result<()> {
             // ❌ GET /core
             // ✅ GET /health
             .service(web::resource("/.well-known/wasmiot-device-description").name("/.well-known/wasmiot-device-description")
-                .route(web::get().to(supervisor::lib::api::wasmiot_device_description))) // Get device description
+                .route(web::get().to(wasmiot_device_description))) // Get device description
             .service(web::resource("/.well-known/wot-thing-description").name("/.well-known/wot-thing-description")
-                .route(web::get().to(supervisor::lib::api::thingi_description))) // Get device wot description (doesnt appear to be implemented in original)
+                .route(web::get().to(thingi_description))) // Get device wot description (doesnt appear to be implemented in original)
             .service(web::resource("/core").name("/core")
                 .route(web::get().to(placeholder))) // Get core service list
             .service(web::resource("/health").name("/health")
-                .route(web::get().to(supervisor::lib::api::thingi_health))) // Get device current health
+                .route(web::get().to(thingi_health))) // Get device current health
 
             // Device related routes (file: routes/device)
             // Status of implementations:
