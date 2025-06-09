@@ -1,16 +1,17 @@
 # orchestrator-rust-port
-Rust version of https://github.com/LiquidAI-project/wasmiot-orchestrator
+Rust version of https://github.com/LiquidAI-project/wasmiot-orchestrator . Goal is to convert the original orchestrator entirely to rust. Depends on https://github.com/LiquidAI-project/wasmiot-orchestrator-webgui for the user interface.
 
-Currently under development and not in a usable state
+Currently under development and not in a usable state. 
 
 ## Usage (development)
 
-When using devcontainer, it assumes that the wasmiot-net exists already, so either run ./wasmiot-network-create.sh or start the services once with docker compose up. Either of them creates the network. 
+To build/start the orchestrator correctly inside devcontainer, run the `./orchestrator-local-start` helper script.
+
+When using devcontainer, it assumes that the wasmiot-net exists already, so either run ./wasmiot-network-create.sh or start the services once with `docker compose up`. To start only mongo (it doesnt start automatically with the devcontainer) run `docker compose up mongo`. Any of them creates the network. 
 
 There are a couple of compose files and scripts, here are their purposes:
 
 - `compose-express.yml` starts mongodb express for easy access to database, by default accessible from http://localhost:5000 , with default credentials being admin:admin
-- `compose-supervisor.yml` starts a single rust supervisor instance, useful for testing the orchestrator
 - `compose.yml` is the "main" compose file, this should start the orchestrator and database. This is also what you should use to start the database before starting devcontainer. Doing that also creates the wasmiot-net, so no need to run wasmiot-network-create separately.
 - `wasmiot-network-create.sh` is a helper script that creates the wasmiot-net if it doesnt exist
 - `mongodb-local-*.sh` are three different scripts for starting, stopping and cleaning/resetting a local non-docker instance of mongodb. They require user to install mongodb on their system themself though.
