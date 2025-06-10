@@ -114,6 +114,18 @@ pub fn get_listening_address() -> (String, u16) {
 pub fn browse_services() -> zeroconf::Result<()> {
 
     std::thread::spawn(move || {
+
+        // Read timing configuration from .env
+        let scan_duration_secs: u64 = env::var("DEVICE_SCAN_DURATION_S")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5);
+
+        let scan_interval_secs: u64 = env::var("DEVICE_SCAN_INTERVAL_S")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(60);
+
         loop {
             let service_type = ServiceType::new("webthing", "tcp").unwrap();
             let mut browser = MdnsBrowser::new(service_type);
@@ -133,14 +145,14 @@ pub fn browse_services() -> zeroconf::Result<()> {
                 Ok(loop_) => loop_,
                 Err(e) => {
                     info!("❌ Failed to start browsing: {:?}", e);
-                    thread::sleep(Duration::from_secs(60));
+                    std::thread::sleep(Duration::from_secs(scan_interval_secs));
                     continue;
                 }
             };
+
             let start = Instant::now();
-            while start.elapsed() < Duration::from_secs(5) {
-                // Poll for devices for 5 seconds each run
-                if let Err(e) = event_loop.poll(Duration::from_millis(250)) {
+            while start.elapsed() < Duration::from_secs(scan_duration_secs) {
+                if let Err(e) = event_loop.poll(Duration::from_millis(100)) {
                     info!("❌ Poll error: {:?}", e);
                     break;
                 }
@@ -149,7 +161,7 @@ pub fn browse_services() -> zeroconf::Result<()> {
             info!("🔁 Discovery complete. Found {} services.", result.len());
 
             // Sleep until the next 60-second interval
-            thread::sleep(Duration::from_secs(60));
+            thread::sleep(Duration::from_secs(scan_interval_secs));
         }
     });
 
