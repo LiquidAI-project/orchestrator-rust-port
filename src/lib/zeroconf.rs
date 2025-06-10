@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use std::thread;
 use std::env;
 use serde::Serialize;
+use chrono::Utc;
 use zeroconf::prelude::*;
 use zeroconf::{
     MdnsBrowser, 
@@ -27,6 +28,8 @@ use crate::lib::constants::{
     ORCHESTRATOR_DEFAULT_NAME,
     PUBLIC_PORT
 };
+use crate::api::device::{DeviceInfo, Communication, StatusLogEntry};
+
 
 /// Represents a service that is advertised on the network.
 ///
@@ -157,8 +160,32 @@ pub fn browse_services() -> zeroconf::Result<()> {
                     break;
                 }
             }
-            let result = discovered.lock().unwrap();
-            info!("🔁 Discovery complete. Found {} services.", result.len());
+            let found = discovered.lock().unwrap();
+            info!("🔁 Discovery complete. Found {} services.", found.len());
+
+            let devices: Vec<DeviceInfo> = found.iter().filter_map(|service| {
+                let name = service.name().to_string();
+                let port = *service.port();
+                let addresses = vec![service.address().clone()];
+
+                if addresses.is_empty() {
+                    return None;
+                }
+
+                Some(DeviceInfo {
+                    name,
+                    communication: Communication { addresses, port },
+                    description: None,
+                    status: "active".to_string(),
+                    ok_health_check_count: 0,
+                    failed_health_check_count: 0,
+                    status_log: vec![StatusLogEntry {
+                        status: "active".to_string(),
+                        time: Utc::now(),
+                    }],
+                    health: None,
+                })
+            }).collect();
 
             // Sleep until the next 60-second interval
             thread::sleep(Duration::from_secs(scan_interval_secs));

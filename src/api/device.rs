@@ -8,7 +8,64 @@ use actix_web::{HttpResponse, Responder};
 use log::info;
 use serde_json::{json, Value};
 use sysinfo::{System, Networks};
+use serde::{Serialize, Deserialize};
+use chrono;
 use std::fs;
+
+
+/// Represents the device information (supervisor or orchestrator)
+/// discovered via mdns. Below is an example of what this would look like
+/// as json:
+/// 
+/// {
+///   name: "device-name",
+///   communication: {
+///     addresses: ["192.168.1.10"],
+///     port: 5000
+///   },
+///   description: {
+///     ...
+///   },
+///   status: "active",
+///   ok_health_check_count: 0,
+///   failed_health_check_count: 0,
+///   status_log: [{ status: "active", time: ... }],
+///   health: {
+///     report: { ... },
+///     time_of_query: ...
+///   }
+/// }
+/// 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    pub name: String,
+    pub communication: Communication,
+    pub description: Option<serde_json::Value>,
+    pub status: String,
+    pub ok_health_check_count: u32,
+    pub failed_health_check_count: u32,
+    pub status_log: Vec<StatusLogEntry>,
+    pub health: Option<HealthReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Communication {
+    pub addresses: Vec<String>,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusLogEntry {
+    pub status: String,
+    pub time: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthReport {
+    pub report: Option<serde_json::Value>,
+    pub time_of_query: chrono::DateTime<chrono::Utc>,
+}
+
 
 /// Returns a system-level health report for the device.
 ///
