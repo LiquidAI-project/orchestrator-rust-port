@@ -1,5 +1,4 @@
 pub mod api {
-    pub mod core_services;
     pub mod data_source_cards;
     pub mod datalist;
     pub mod deployment_certificates;

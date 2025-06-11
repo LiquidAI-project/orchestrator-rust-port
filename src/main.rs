@@ -63,18 +63,15 @@ async fn main() -> std::io::Result<()> {
             // Add the client so it can be used in every route
             // .app_data(web::Data::new(client.clone()))
 
-            // "Core" services of the orchestrator (file: routes/coreServices)
+            // Basic routes related to device information and health status
             // Status of implementations:
             // ✅ GET /.well-known/wasmiot-device-description
             // ✅ GET /.well-known/wot-thing-description
-            // ❌ GET /core
             // ✅ GET /health
             .service(web::resource("/.well-known/wasmiot-device-description").name("/.well-known/wasmiot-device-description")
                 .route(web::get().to(wasmiot_device_description))) // Get device description
             .service(web::resource("/.well-known/wot-thing-description").name("/.well-known/wot-thing-description")
                 .route(web::get().to(thingi_description))) // Get device wot description (doesnt appear to be implemented in original)
-            .service(web::resource("/core").name("/core")
-                .route(web::get().to(placeholder))) // Get core service list
             .service(web::resource("/health").name("/health")
                 .route(web::get().to(thingi_health))) // Get device current health
 
