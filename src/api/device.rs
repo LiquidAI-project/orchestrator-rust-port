@@ -26,6 +26,7 @@ use crate::lib::mongodb::{
     update_field,
     get_collection
 };
+use crate::lib::zeroconf;
 
 
 /// Represents the device information (supervisor or orchestrator)
@@ -384,5 +385,16 @@ async fn perform_health_checks() -> mongodb::error::Result<()>{
     );
 
     Ok(())
+}
+
+/// Handler for resetting device discovery
+pub async fn reset_device_discovery() -> impl Responder {
+    match zeroconf::run_single_mdns_scan(5).await {
+        Ok(_) => HttpResponse::NoContent().finish(),
+        Err(e) => {
+            error!("Failed to trigger device rescan: {}", e);
+            HttpResponse::InternalServerError().body("Failed to rescan devices")
+        }
+    }
 }
 

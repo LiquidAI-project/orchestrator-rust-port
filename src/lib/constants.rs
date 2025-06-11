@@ -15,10 +15,12 @@ pub const DEFAULT_URL_SCHEME: &str = "http";
 /// Default name of the orchestrator
 pub const ORCHESTRATOR_DEFAULT_NAME: &str = "orchestrator";
 
-// Default path of the instance folder and config folder
+// Get some env vars, preventing the need to read them from env more than once during runtime.
 lazy_static! {
     pub static ref INSTANCE_PATH: PathBuf = env::current_dir().unwrap().join("instance");
     pub static ref CONFIG_PATH: PathBuf = env::current_dir().unwrap().join("instance/config");
     pub static ref DEVICE_HEALTH_CHECK_INTERVAL_S: u64 = env::var("DEVICE_HEALTH_CHECK_INTERVAL_S").ok().and_then(|u| u.parse().ok()).unwrap();
     pub static ref DEVICE_HEALTHCHECK_FAILED_THRESHOLD: u32 = env::var("DEVICE_HEALTHCHECK_FAILED_THRESHOLD").ok().and_then(|u| u.parse().ok()).unwrap();
+    pub static ref DEVICE_SCAN_DURATION_S: u64 = env::var("DEVICE_SCAN_DURATION_S").ok().and_then(|u| u.parse().ok()).unwrap();
+    pub static ref DEVICE_SCAN_INTERVAL_S: u64 = env::var("DEVICE_SCAN_INTERVAL_S").ok().and_then(|u| u.parse().ok()).unwrap();
 }

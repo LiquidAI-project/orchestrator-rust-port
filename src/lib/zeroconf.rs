@@ -24,7 +24,9 @@ use zeroconf::{
 use crate::lib::constants::{
     DEFAULT_URL_SCHEME,
     ORCHESTRATOR_DEFAULT_NAME,
-    PUBLIC_PORT
+    PUBLIC_PORT,
+    DEVICE_SCAN_DURATION_S,
+    DEVICE_SCAN_INTERVAL_S
 };
 use crate::api::device::{DeviceInfo, Communication, StatusLogEntry, process_discovered_devices};
 
@@ -108,27 +110,14 @@ pub fn get_listening_address() -> (String, u16) {
     (host, port)
 }
 
-
-// Mdns browser
-// TODO: Another version that can be called via reset device discovery, triggering a single device refresh
-// TODO: Add separate device discovery related logic, and move it to device.rs
-pub async fn browse_services() -> zeroconf::Result<()> {
-    // Read timing configuration from .env
-    let scan_duration_secs: u64 = env::var("DEVICE_SCAN_DURATION_S")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(5);
-    let scan_interval_secs: u64 = env::var("DEVICE_SCAN_INTERVAL_S")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(60);
-
-    loop {
-        let service_type = ServiceType::new("webthing", "tcp").unwrap();
+/// Runs a single scan for new devices, and saves them to database if it finds any.
+pub async fn run_single_mdns_scan(scan_duration_secs: u64) -> zeroconf::Result<()> {
+let service_type = ServiceType::new("webthing", "tcp").unwrap();
         let mut browser = MdnsBrowser::new(service_type);
 
         browser.set_service_discovered_callback(Box::new(move |result, _| {
             if let Ok(service) = result {
+                debug!("Device scan found a device: {:?}", service);
                 tokio::spawn(async move {
                     let name = service.name().to_string();
                     let port = *service.port();
@@ -175,8 +164,7 @@ pub async fn browse_services() -> zeroconf::Result<()> {
             Ok(loop_) => loop_,
             Err(e) => {
                 error!("❌ Failed to start browsing: {:?}", e);
-                tokio::time::sleep(Duration::from_secs(scan_interval_secs)).await;
-                continue;
+                return Err(e);
             }
         };
 
@@ -184,12 +172,20 @@ pub async fn browse_services() -> zeroconf::Result<()> {
         while start.elapsed() < Duration::from_secs(scan_duration_secs) {
             if let Err(e) = event_loop.poll(Duration::from_millis(100)) {
                 error!("❌ Poll error: {:?}", e);
-                break;
             }
         }
+        Ok(())
+}
 
-        // Sleep until the next 60-second interval
-        tokio::time::sleep(Duration::from_secs(scan_interval_secs)).await;
+
+/// Starts an endless loop for continously scanning for new devices with
+/// predefined intervals
+pub async fn browse_services() -> zeroconf::Result<()> {
+
+    loop {
+        // Run a single scan and sleep for a predefined time before next scan
+        let _ = run_single_mdns_scan(*DEVICE_SCAN_DURATION_S).await;
+        tokio::time::sleep(Duration::from_secs(*DEVICE_SCAN_INTERVAL_S)).await;
     };
 }
 

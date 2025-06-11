@@ -6,7 +6,8 @@ use orchestrator::api::device::{
     wasmiot_device_description, 
     thingi_description,
     thingi_health,
-    run_health_check_loop
+    run_health_check_loop,
+    reset_device_discovery
 };
 use orchestrator::lib::zeroconf;
 use log::{error, debug};
@@ -94,7 +95,7 @@ async fn main() -> std::io::Result<()> {
             // ❌ DELETE /file/device
             // ❌ GET /file/device/{device_id}
             // ❌ DELETE /file/device/{device_id}
-            // ❌ POST /file/device/discovery/reset
+            // ✅ POST /file/device/discovery/reset
             // ❌ POST /file/device/discovery/register
             .service(web::resource("/file/device").name("/file/device")
                 .route(web::get().to(placeholder)) // Get all devices
@@ -103,7 +104,7 @@ async fn main() -> std::io::Result<()> {
                 .route(web::get().to(placeholder)) // Get device info on specific device. (Doesnt exist in original.)
                 .route(web::delete().to(placeholder))) // Delete a specific device. (Doesnt exist in original.)
             .service(web::resource("/file/device/discovery/reset").name("/file/device/discovery/reset")
-                .route(web::post().to(placeholder))) // Forces the start of a new device scan without waiting for the next one (they happen at regular intervals)
+                .route(web::post().to(reset_device_discovery))) // Forces the start of a new device scan without waiting for the next one (they happen at regular intervals)
             .service(web::resource("/file/device/discovery/register").name("/file/device/discovery/register")
                 .route(web::post().to(placeholder))) // Supervisors can force device registration through this endpoint
 
