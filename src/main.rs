@@ -1,19 +1,20 @@
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use serde_json::json;
-use mongodb::Client;
 use actix_cors::Cors;
 use orchestrator::api::device::{
     wasmiot_device_description, 
     thingi_description,
     thingi_health,
     run_health_check_loop,
-    reset_device_discovery
+    reset_device_discovery,
+    get_all_devices,
+    get_device_by_name
 };
 use orchestrator::lib::zeroconf;
 use log::{error, debug};
 
 // Placeholder handler
-async fn placeholder(_client: web::Data<Client>, req: HttpRequest) -> impl Responder {
+async fn placeholder(req: HttpRequest) -> impl Responder {
     let match_name = req.match_name().unwrap_or("<no match name>");
     let match_pattern = req.match_pattern().unwrap_or("<no match pattern>".to_string());
     debug!("{}, {}, {}", req.full_url().as_str(), match_name, match_pattern);
@@ -91,17 +92,17 @@ async fn main() -> std::io::Result<()> {
 
             // Device related routes (file: routes/device)
             // Status of implementations:
-            // ❌ GET /file/device
+            // ✅ GET /file/device
             // ❌ DELETE /file/device
-            // ❌ GET /file/device/{device_id}
+            // ✅ GET /file/device/{device_id}
             // ❌ DELETE /file/device/{device_id}
             // ✅ POST /file/device/discovery/reset
             // ❌ POST /file/device/discovery/register
             .service(web::resource("/file/device").name("/file/device")
-                .route(web::get().to(placeholder)) // Get all devices
+                .route(web::get().to(get_all_devices)) // Get all devices
                 .route(web::delete().to(placeholder))) // Delete all devices
-            .service(web::resource("/file/device/{device_id}").name("/file/device/{device_id}")
-                .route(web::get().to(placeholder)) // Get device info on specific device. (Doesnt exist in original.)
+            .service(web::resource("/file/device/{device_name}").name("/file/device/{device_name}")
+                .route(web::get().to(get_device_by_name)) // Get device info on specific device. (Doesnt exist in original.)
                 .route(web::delete().to(placeholder))) // Delete a specific device. (Doesnt exist in original.)
             .service(web::resource("/file/device/discovery/reset").name("/file/device/discovery/reset")
                 .route(web::post().to(reset_device_discovery))) // Forces the start of a new device scan without waiting for the next one (they happen at regular intervals)

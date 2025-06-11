@@ -134,6 +134,7 @@ let service_type = ServiceType::new("webthing", "tcp").unwrap();
                     }
 
                     let _device = Some(DeviceInfo {
+                        id: None,
                         name,
                         communication: Communication { addresses, port },
                         description: None,

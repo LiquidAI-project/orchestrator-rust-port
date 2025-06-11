@@ -3,7 +3,7 @@
 //! Contains device related items, such as serving device descriptions
 //! and healthchecks.
 
-use actix_web::{HttpResponse, Responder};
+use actix_web::{HttpResponse, Responder, web};
 use log::{info, warn, debug, error};
 use serde_json::{json, Value};
 use sysinfo::{System, Networks};
@@ -54,6 +54,8 @@ use crate::lib::zeroconf;
 /// 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceInfo {
+    #[serde(rename = "_id", skip_serializing_if = "Option::is_none", with = "object_id_as_string")]
+    pub id: Option<bson::oid::ObjectId>,
     pub name: String,
     pub communication: Communication,
     pub description: Option<serde_json::Value>,
@@ -81,6 +83,30 @@ pub struct HealthReport {
     pub report: Option<serde_json::Value>,
     pub time_of_query: chrono::DateTime<chrono::Utc>,
 }
+
+/// Helper for serializing mongodb _id to fit the expected format in DeviceInfo
+mod object_id_as_string {
+    use serde::{self, Deserialize, Deserializer, Serializer};
+    use mongodb::bson::oid::ObjectId;
+
+    pub fn serialize<S>(id: &Option<ObjectId>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match id {
+            Some(oid) => serializer.serialize_str(&oid.to_hex()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<ObjectId>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        ObjectId::deserialize(deserializer).map(Some)
+    }
+}
+
 
 
 /// Returns a system-level health report for the device.
@@ -387,6 +413,7 @@ async fn perform_health_checks() -> mongodb::error::Result<()>{
     Ok(())
 }
 
+
 /// Handler for resetting device discovery
 pub async fn reset_device_discovery() -> impl Responder {
     match zeroconf::run_single_mdns_scan(5).await {
@@ -397,4 +424,41 @@ pub async fn reset_device_discovery() -> impl Responder {
         }
     }
 }
+
+
+/// Returns all known devices from the database.
+pub async fn get_all_devices() -> impl Responder {
+    let collection = get_collection::<DeviceInfo>("device").await;
+
+    match collection.find(doc! {}).await {
+        Ok(cursor) => {
+            match cursor.try_collect::<Vec<DeviceInfo>>().await {
+                Ok(devices) => HttpResponse::Ok().json(devices),
+                Err(e) => {
+                    error!("❌ Failed to collect devices: {:?}", e);
+                    HttpResponse::InternalServerError().body("Failed to collect devices")
+                }
+            }
+        }
+        Err(e) => {
+            error!("❌ Failed to query devices: {:?}", e);
+            HttpResponse::InternalServerError().body("Failed to query devices")
+        }
+    }
+}
+
+
+/// Returns a single device by name
+pub async fn get_device_by_name(device_name: web::Path<String>) -> impl Responder {
+    match find_one::<DeviceInfo>("device", doc! { "name": device_name.as_str() }).await {
+        Ok(Some(device)) => HttpResponse::Ok().json(device),
+        Ok(None) => HttpResponse::NotFound().body("Device not found"),
+        Err(e) => {
+            error!("Failed to retrieve device '{}': {:?}", device_name, e);
+            HttpResponse::InternalServerError().body("Failed to retrieve device")
+        }
+    }
+}
+
+
 
