@@ -8,10 +8,13 @@ use orchestrator::api::device::{
     run_health_check_loop,
     reset_device_discovery,
     get_all_devices,
-    get_device_by_name
+    get_device_by_name,
+    delete_all_devices,
+    delete_device_by_name
 };
 use orchestrator::lib::zeroconf;
 use log::{error, debug};
+use actix_web::middleware::NormalizePath;
 
 // Placeholder handler
 async fn placeholder(req: HttpRequest) -> impl Responder {
@@ -74,6 +77,9 @@ async fn main() -> std::io::Result<()> {
             .wrap(
                 actix_web::middleware::Logger::default()
             )
+            .wrap(
+                NormalizePath::trim()
+            )
 
             // Add the client so it can be used in every route
             // .app_data(web::Data::new(client.clone()))
@@ -93,17 +99,17 @@ async fn main() -> std::io::Result<()> {
             // Device related routes (file: routes/device)
             // Status of implementations:
             // ✅ GET /file/device
-            // ❌ DELETE /file/device
+            // ✅ DELETE /file/device
             // ✅ GET /file/device/{device_id}
-            // ❌ DELETE /file/device/{device_id}
+            // ✅ DELETE /file/device/{device_id}
             // ✅ POST /file/device/discovery/reset
             // ❌ POST /file/device/discovery/register
             .service(web::resource("/file/device").name("/file/device")
                 .route(web::get().to(get_all_devices)) // Get all devices
-                .route(web::delete().to(placeholder))) // Delete all devices
+                .route(web::delete().to(delete_all_devices))) // Delete all devices
             .service(web::resource("/file/device/{device_name}").name("/file/device/{device_name}")
                 .route(web::get().to(get_device_by_name)) // Get device info on specific device. (Doesnt exist in original.)
-                .route(web::delete().to(placeholder))) // Delete a specific device. (Doesnt exist in original.)
+                .route(web::delete().to(delete_device_by_name))) // Delete a specific device. (Doesnt exist in original.)
             .service(web::resource("/file/device/discovery/reset").name("/file/device/discovery/reset")
                 .route(web::post().to(reset_device_discovery))) // Forces the start of a new device scan without waiting for the next one (they happen at regular intervals)
             .service(web::resource("/file/device/discovery/register").name("/file/device/discovery/register")

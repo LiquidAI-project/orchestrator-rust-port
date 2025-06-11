@@ -447,6 +447,20 @@ pub async fn get_all_devices() -> impl Responder {
     }
 }
 
+/// Deletes all known devices from database
+pub async fn delete_all_devices() -> impl Responder {
+    match get_collection::<DeviceInfo>("device").await
+        .delete_many(doc! {})
+        .await
+    {
+        Ok(result) => HttpResponse::Ok().json(json!({ "deleted_count": result.deleted_count })),
+        Err(e) => {
+            error!("❌ Failed to delete all devices: {}", e);
+            HttpResponse::InternalServerError().body("Failed to delete devices")
+        }
+    }
+}
+
 
 /// Returns a single device by name
 pub async fn get_device_by_name(device_name: web::Path<String>) -> impl Responder {
@@ -456,6 +470,29 @@ pub async fn get_device_by_name(device_name: web::Path<String>) -> impl Responde
         Err(e) => {
             error!("Failed to retrieve device '{}': {:?}", device_name, e);
             HttpResponse::InternalServerError().body("Failed to retrieve device")
+        }
+    }
+}
+
+
+/// Deletes a specific device from database (by its name)
+pub async fn delete_device_by_name(path: web::Path<String>) -> impl Responder {
+    let name = path.into_inner();
+
+    match get_collection::<DeviceInfo>("device").await
+        .delete_one(doc! { "name": name.clone() })
+        .await
+    {
+        Ok(result) => {
+            if result.deleted_count == 1 {
+                HttpResponse::NoContent().finish()
+            } else {
+                HttpResponse::NotFound().body(format!("Device '{}' not found", name))
+            }
+        }
+        Err(e) => {
+            error!("❌ Failed to delete device '{}': {}", name, e);
+            HttpResponse::InternalServerError().body("Failed to delete device")
         }
     }
 }
