@@ -2,7 +2,6 @@ use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use serde_json::json;
 use mongodb::Client;
 use actix_cors::Cors;
-use orchestrator::lib::mongodb::initialize_client;
 use orchestrator::api::device::{
     wasmiot_device_description, 
     thingi_description,
@@ -33,22 +32,18 @@ async fn main() -> std::io::Result<()> {
     // Initialize logging with default level = info (unless overridden by env)
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    // Initialize MongoDB client.
-    let client = initialize_client().await.expect("Failed to initialize MongoDB client");
-
     // Start mdns browser to start polling for available supervisors
-    if let Err(e) = zeroconf::browse_services() {
-        error!("Failed to start mDNS browser: {}", e);
-    } else {
-        info!("Mdns browser started succesfully.");
-    }
+    std::thread::spawn(|| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rt.block_on(zeroconf::browse_services());
+    });
 
     // Start advertising orchestrator to itself via mdns
     let zc = zeroconf::WebthingZeroconf::new();
     if let Err(e) = zeroconf::register_service(zc) {
-        error!("Failed to start mDNS listener: {}", e);
+        error!("Failed to start mDNS advertisement: {}", e);
     } else {
-        info!("Mdns listener started succesfully.");
+        info!("Mdns advertisement started succesfully.");
     }
 
     HttpServer::new(move || {
@@ -66,7 +61,7 @@ async fn main() -> std::io::Result<()> {
             )
 
             // Add the client so it can be used in every route
-            .app_data(web::Data::new(client.clone()))
+            // .app_data(web::Data::new(client.clone()))
 
             // "Core" services of the orchestrator (file: routes/coreServices)
             // Status of implementations:

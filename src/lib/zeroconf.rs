@@ -10,9 +10,7 @@
 
 use log::info;
 use local_ip_address;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::thread;
 use std::env;
 use serde::Serialize;
 use chrono::Utc;
@@ -28,7 +26,7 @@ use crate::lib::constants::{
     ORCHESTRATOR_DEFAULT_NAME,
     PUBLIC_PORT
 };
-use crate::api::device::{DeviceInfo, Communication, StatusLogEntry};
+use crate::api::device::{DeviceInfo, Communication, StatusLogEntry, process_discovered_devices};
 
 
 /// Represents a service that is advertised on the network.
@@ -114,86 +112,87 @@ pub fn get_listening_address() -> (String, u16) {
 // Mdns browser
 // TODO: Another version that can be called via reset device discovery, triggering a single device refresh
 // TODO: Add separate device discovery related logic, and move it to device.rs
-pub fn browse_services() -> zeroconf::Result<()> {
+pub async fn browse_services() -> zeroconf::Result<()> {
+    // Read timing configuration from .env
+    let scan_duration_secs: u64 = env::var("DEVICE_SCAN_DURATION_S")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
+    let scan_interval_secs: u64 = env::var("DEVICE_SCAN_INTERVAL_S")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60);
 
-    std::thread::spawn(move || {
+    loop {
+        let service_type = ServiceType::new("webthing", "tcp").unwrap();
+        let mut browser = MdnsBrowser::new(service_type);
 
-        // Read timing configuration from .env
-        let scan_duration_secs: u64 = env::var("DEVICE_SCAN_DURATION_S")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(5);
+        browser.set_service_discovered_callback(Box::new(move |result, _| {
+            if let Ok(service) = result {
+                tokio::spawn(async move {
+                    let name = service.name().to_string();
+                    let port = *service.port();
+                    let addresses = vec![service.address().clone()];
 
-        let scan_interval_secs: u64 = env::var("DEVICE_SCAN_INTERVAL_S")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(60);
+                    if addresses.is_empty() {
+                        return;
+                    }
 
-        loop {
-            let service_type = ServiceType::new("webthing", "tcp").unwrap();
-            let mut browser = MdnsBrowser::new(service_type);
-            let discovered = Arc::new(Mutex::new(Vec::new()));
-            let discovered_clone = Arc::clone(&discovered);
+                    if name == "orchestrator" && addresses[0] == "127.0.0.1" {
+                        // Special case to prevent orchestrator detecting itself twice.
+                        // TODO: Find a smarter way to prevent this
+                        return;
+                    }
 
-            browser.set_service_discovered_callback(Box::new(move |result, _| {
-                if let Ok(service) = result {
-                    info!("🔍 Found: {:?}", service);
-                    discovered_clone.lock().unwrap().push(service);
-                } else {
-                    info!("❌ Discovery error.");
-                }
-            }));
-
-            let event_loop = match browser.browse_services() {
-                Ok(loop_) => loop_,
-                Err(e) => {
-                    info!("❌ Failed to start browsing: {:?}", e);
-                    std::thread::sleep(Duration::from_secs(scan_interval_secs));
-                    continue;
-                }
-            };
-
-            let start = Instant::now();
-            while start.elapsed() < Duration::from_secs(scan_duration_secs) {
-                if let Err(e) = event_loop.poll(Duration::from_millis(100)) {
-                    info!("❌ Poll error: {:?}", e);
-                    break;
-                }
-            }
-            let found = discovered.lock().unwrap();
-            info!("🔁 Discovery complete. Found {} services.", found.len());
-
-            let devices: Vec<DeviceInfo> = found.iter().filter_map(|service| {
-                let name = service.name().to_string();
-                let port = *service.port();
-                let addresses = vec![service.address().clone()];
-
-                if addresses.is_empty() {
-                    return None;
-                }
-
-                Some(DeviceInfo {
-                    name,
-                    communication: Communication { addresses, port },
-                    description: None,
-                    status: "active".to_string(),
-                    ok_health_check_count: 0,
-                    failed_health_check_count: 0,
-                    status_log: vec![StatusLogEntry {
+                    let _device = Some(DeviceInfo {
+                        name,
+                        communication: Communication { addresses, port },
+                        description: None,
                         status: "active".to_string(),
-                        time: Utc::now(),
-                    }],
-                    health: None,
-                })
-            }).collect();
+                        ok_health_check_count: 0,
+                        failed_health_check_count: 0,
+                        status_log: vec![StatusLogEntry {
+                            status: "active".to_string(),
+                            time: Utc::now(),
+                        }],
+                        health: None,
+                    });
 
-            // Sleep until the next 60-second interval
-            thread::sleep(Duration::from_secs(scan_interval_secs));
+                    let _ = if let Some(device) = _device {
+                        let devices = vec!(device);
+                        let _ = process_discovered_devices(devices).await;
+                    } else {
+                        //
+                    };
+                });
+                
+            } else {
+                info!("❌ Discovery error.");
+            }
+        }));
+
+        let event_loop = match browser.browse_services() {
+            Ok(loop_) => loop_,
+            Err(e) => {
+                info!("❌ Failed to start browsing: {:?}", e);
+                tokio::time::sleep(Duration::from_secs(scan_interval_secs)).await;
+                continue;
+            }
+        };
+
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(scan_duration_secs) {
+            if let Err(e) = event_loop.poll(Duration::from_millis(100)) {
+                info!("❌ Poll error: {:?}", e);
+                break;
+            }
         }
-    });
 
-    Ok(())
+        // Sleep until the next 60-second interval
+        tokio::time::sleep(Duration::from_secs(scan_interval_secs)).await;
+    };
 }
+
 
 /// Spawn a separate thread that continuously listens for mdns requests, and
 /// responds with orchestrator data when requested.

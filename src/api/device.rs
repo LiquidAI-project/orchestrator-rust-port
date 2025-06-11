@@ -3,14 +3,17 @@
 //! Contains device related items, such as serving device descriptions
 //! and healthchecks.
 
-use crate::lib::constants::CONFIG_PATH;
 use actix_web::{HttpResponse, Responder};
 use log::info;
 use serde_json::{json, Value};
 use sysinfo::{System, Networks};
 use serde::{Serialize, Deserialize};
+use mongodb::{bson::Bson, bson::to_bson, bson::doc};
+use reqwest;
 use chrono;
 use std::fs;
+use crate::lib::constants::CONFIG_PATH;
+use crate::lib::mongodb::{find_one, insert_one, update_field};
 
 
 /// Represents the device information (supervisor or orchestrator)
@@ -190,4 +193,90 @@ pub fn get_device_platform_info() -> Value {
         },
         "network": network_data
     })
+}
+
+
+/// Check whether each discovered device is already in the database.
+/// If not, insert it and fetch its description + health asynchronously.
+pub async fn process_discovered_devices(devices: Vec<DeviceInfo>) {
+    for device in devices {
+        // Check if device already exists
+        let exists = find_one::<DeviceInfo>("device", doc! { "name": &device.name })
+            .await
+            .unwrap_or(None)
+            .is_some();
+        if exists {
+            continue;
+        }
+
+        // If device did not exist, add it into database
+        if let Err(e) = insert_one("device", &device).await {
+            log::error!("❌ Saving new device failed for '{}': {:?}", device.name, e);
+            continue;
+        }
+        info!("🆕 Found new device '{}'", device.name);
+
+        let device_clone = device.clone();
+
+        // For the new device, get the device description and run first health check
+        if let Some(desc) = fetch_device_description(&device_clone).await {
+            let bson_desc = to_bson(&desc).unwrap_or(Bson::Null);
+            let _ = update_field::<DeviceInfo>("device", doc! { "name": &device_clone.name }, "description", bson_desc).await;
+            info!("📄 Device description fetched for '{}'", device_clone.name);
+        }
+
+        if let Some(health) = fetch_device_health(&device_clone).await {
+            let health_report = HealthReport {
+                report: Some(health),
+                time_of_query: chrono::Utc::now(),
+            };
+            let bson_health = to_bson(&health_report).unwrap_or(Bson::Null);
+            let _ = update_field::<DeviceInfo>("device", doc! { "name": &device_clone.name }, "health", bson_health).await;
+            info!("❤️ Healthcheck done for '{}'", device_clone.name);
+        }
+    }
+}
+
+
+/// Attempt to fetch the device description.
+/// Returns parsed JSON on success.
+async fn fetch_device_description(device: &DeviceInfo) -> Option<serde_json::Value> {
+    let url = format!(
+        "http://{}:{}/.well-known/wasmiot-device-description",
+        device.communication.addresses[0],
+        device.communication.port
+    );
+
+    match reqwest::get(&url).await {
+        Ok(res) if res.status().is_success() => {
+            res.json::<serde_json::Value>().await.ok()
+        }
+        Err(e) => {
+            log::warn!("Failed to fetch device description from {}: {}", device.name, e);
+            None
+        }
+        _ => None,
+    }
+}
+
+
+/// Do a healthcheck on a device.
+/// Returns parsed JSON on success.
+async fn fetch_device_health(device: &DeviceInfo) -> Option<serde_json::Value> {
+    let url = format!(
+        "http://{}:{}/health",
+        device.communication.addresses[0],
+        device.communication.port
+    );
+
+    match reqwest::get(&url).await {
+        Ok(res) if res.status().is_success() => {
+            res.json::<serde_json::Value>().await.ok()
+        }
+        Err(e) => {
+            log::warn!("Failed to do healthcheck for {}: {}", device.name, e);
+            None
+        }
+        _ => None,
+    }
 }

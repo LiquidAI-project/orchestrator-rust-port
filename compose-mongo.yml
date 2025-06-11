@@ -1,0 +1,27 @@
+  
+services:
+
+  mongo:
+    image: mongo
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:27017:27017"
+    networks:
+      - wasmiot-net
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+    command: mongod --port ${MONGO_PORT:-27017}
+    volumes:
+      - mongo-config:/data/configdb
+      - mongo-db:/data/db
+    env_file:
+      - ./.env
+
+volumes:
+  mongo-config:
+  mongo-db:
+
+networks:
+  wasmiot-net:
+    external: true
