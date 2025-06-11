@@ -28,6 +28,17 @@ use crate::lib::mongodb::{
 };
 use crate::lib::zeroconf;
 
+/// Struct used with manual device registrations
+#[derive(Debug, Deserialize)]
+pub struct ManualDeviceRegistration {
+    pub name: Option<String>,
+    pub addresses: Option<Vec<String>>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub protocol: Option<String>,
+    pub properties: Option<serde_json::Value>,
+}
+
 
 /// Represents the device information (supervisor or orchestrator)
 /// discovered via mdns. Below is an example of what this would look like
@@ -498,4 +509,56 @@ pub async fn delete_device_by_name(path: web::Path<String>) -> impl Responder {
 }
 
 
+/// Adds a device to known devices without depending on mdns mechanisms
+pub async fn register_device(info: web::Json<ManualDeviceRegistration>) -> impl Responder {
+    let name = info.name.clone()
+        .or_else(|| info.host.clone())
+        .unwrap_or_else(|| "unknown-device".to_string());
 
+    let addresses = info.addresses.clone()
+        .or_else(|| info.host.clone().map(|h| vec![h]))
+        .unwrap_or_else(|| vec!["127.0.0.1".to_string()]);
+
+    let port = info.port.unwrap_or(5000);
+
+    let device = DeviceInfo {
+        id: None,
+        name: name.clone(),
+        communication: Communication { addresses: addresses.clone(), port },
+        description: None,
+        status: "active".to_string(),
+        ok_health_check_count: 0,
+        failed_health_check_count: 0,
+        status_log: vec![StatusLogEntry {
+            status: "active".to_string(),
+            time: Utc::now(),
+        }],
+        health: None,
+    };
+
+    if let Err(e) = insert_one("device", &device).await {
+        error!("❌ Manual registration failed for '{}': {:?}", device.name, e);
+        return HttpResponse::InternalServerError().body("Failed to register device");
+    }
+
+    info!("🆕 Manually registered device '{}'", name);
+
+    // Fetch description and health like mDNS logic
+    if let Some(desc) = fetch_device_description(&device).await {
+        let bson_desc = to_bson(&desc).unwrap_or(Bson::Null);
+        let _ = update_field::<DeviceInfo>("device", doc! { "name": &device.name }, "description", bson_desc).await;
+        info!("📄 '{}' device description fetched", device.name);
+    }
+
+    if let Some(health) = fetch_device_health(&device).await {
+        let health_report = HealthReport {
+            report: Some(health),
+            time_of_query: Utc::now(),
+        };
+        let bson_health = to_bson(&health_report).unwrap_or(Bson::Null);
+        let _ = update_field::<DeviceInfo>("device", doc! { "name": &device.name }, "health", bson_health).await;
+        info!("📄 '{}' initial healthcheck done", device.name);
+    }
+
+    HttpResponse::NoContent().finish()
+}

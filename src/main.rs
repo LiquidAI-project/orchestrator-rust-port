@@ -10,7 +10,8 @@ use orchestrator::api::device::{
     get_all_devices,
     get_device_by_name,
     delete_all_devices,
-    delete_device_by_name
+    delete_device_by_name,
+    register_device
 };
 use orchestrator::lib::zeroconf;
 use log::{error, debug};
@@ -103,7 +104,7 @@ async fn main() -> std::io::Result<()> {
             // ✅ GET /file/device/{device_id}
             // ✅ DELETE /file/device/{device_id}
             // ✅ POST /file/device/discovery/reset
-            // ❌ POST /file/device/discovery/register
+            // ✅ POST /file/device/discovery/register
             .service(web::resource("/file/device").name("/file/device")
                 .route(web::get().to(get_all_devices)) // Get all devices
                 .route(web::delete().to(delete_all_devices))) // Delete all devices
@@ -113,7 +114,7 @@ async fn main() -> std::io::Result<()> {
             .service(web::resource("/file/device/discovery/reset").name("/file/device/discovery/reset")
                 .route(web::post().to(reset_device_discovery))) // Forces the start of a new device scan without waiting for the next one (they happen at regular intervals)
             .service(web::resource("/file/device/discovery/register").name("/file/device/discovery/register")
-                .route(web::post().to(placeholder))) // Supervisors can force device registration through this endpoint
+                .route(web::post().to(register_device))) // Supervisors can force device registration through this endpoint
 
             // Log related routes (file: routes/logs)
             // Status of implementations:
