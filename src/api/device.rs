@@ -4,16 +4,28 @@
 //! and healthchecks.
 
 use actix_web::{HttpResponse, Responder};
-use log::info;
+use log::{info, warn, debug};
 use serde_json::{json, Value};
 use sysinfo::{System, Networks};
 use serde::{Serialize, Deserialize};
-use mongodb::{bson::Bson, bson::to_bson, bson::doc};
+use mongodb::{bson::Bson, bson::to_bson, bson::doc, bson};
 use reqwest;
 use chrono;
+use chrono::Utc;
 use std::fs;
-use crate::lib::constants::CONFIG_PATH;
-use crate::lib::mongodb::{find_one, insert_one, update_field};
+use tokio::time::{sleep, Duration};
+use futures::stream::TryStreamExt;
+use crate::lib::constants::{
+    CONFIG_PATH, 
+    DEVICE_HEALTHCHECK_FAILED_THRESHOLD, 
+    DEVICE_HEALTH_CHECK_INTERVAL_S
+};
+use crate::lib::mongodb::{
+    find_one, 
+    insert_one, 
+    update_field,
+    get_collection
+};
 
 
 /// Represents the device information (supervisor or orchestrator)
@@ -280,3 +292,84 @@ async fn fetch_device_health(device: &DeviceInfo) -> Option<serde_json::Value> {
         _ => None,
     }
 }
+
+
+/// Continous loop for running health checks on known devices
+pub async fn run_health_check_loop() {
+    loop {  
+        if let Err(e) = perform_health_checks().await {
+            log::error!("Health check loop failed: {}", e);
+        } else {
+            info!("✅ Device healthchecks completed");
+        }
+        sleep(Duration::from_secs(*DEVICE_HEALTH_CHECK_INTERVAL_S)).await;
+    }
+}
+
+
+/// Performs health checks on all known devices.
+/// Will mark devices as inactive if certain number of health checks are failed.
+async fn perform_health_checks() -> mongodb::error::Result<()>{
+    let collection = get_collection::<DeviceInfo>("device").await;
+    let devices: Vec<DeviceInfo> = collection.find(doc! {}).await?
+        .try_collect()
+        .await?;
+
+    let now = Utc::now();
+
+    for mut device in devices {
+        match fetch_device_health(&device).await {
+            Some(report) => {
+                device.health = Some(HealthReport {
+                    report: Some(report),
+                    time_of_query: now,
+                });
+                device.failed_health_check_count = 0;
+                device.ok_health_check_count += 1;
+
+                if device.status != "active" && device.ok_health_check_count >= *DEVICE_HEALTHCHECK_FAILED_THRESHOLD {
+                    device.status = "active".to_string();
+                    device.status_log.insert(0, StatusLogEntry {
+                        status: "active".into(),
+                        time: now,
+                    });
+                    info!("✅ Device '{}' changed to active", device.name);
+                }
+            }
+            None => {
+                device.ok_health_check_count = 0;
+                device.failed_health_check_count += 1;
+                device.health = Some(HealthReport {
+                    report: None,
+                    time_of_query: now,
+                });
+
+                if device.status != "inactive" && device.failed_health_check_count >= *DEVICE_HEALTHCHECK_FAILED_THRESHOLD {
+                    device.status = "inactive".to_string();
+                    device.status_log.insert(0, StatusLogEntry {
+                        status: "inactive".into(),
+                        time: now,
+                    });
+                    warn!("🔴 Device '{}' changed to inactive", device.name);
+
+                    // TODO: Implement the deployment check logic thingy here later
+                }
+            }
+        }
+
+        // Write updates back to mongo
+        let update = doc! {
+            "$set": {
+                "status": &device.status,
+                "failed_health_check_count": device.failed_health_check_count,
+                "ok_health_check_count": device.ok_health_check_count,
+                "status_log": bson::to_bson(&device.status_log)?,
+                "health": bson::to_bson(&device.health)?,
+            }
+        };
+        collection.update_one(doc! { "name": &device.name }, update).await?;
+    }
+
+    Ok(())
+}
+

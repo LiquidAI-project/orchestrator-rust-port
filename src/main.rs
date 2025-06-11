@@ -5,7 +5,8 @@ use actix_cors::Cors;
 use orchestrator::api::device::{
     wasmiot_device_description, 
     thingi_description,
-    thingi_health
+    thingi_health,
+    run_health_check_loop
 };
 use orchestrator::lib::zeroconf;
 use log::{info, warn, error};
@@ -45,6 +46,12 @@ async fn main() -> std::io::Result<()> {
     } else {
         info!("Mdns advertisement started succesfully.");
     }
+
+    // Start a separate loop to perform continous healthchecks on known devices
+    std::thread::spawn(|| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(run_health_check_loop());
+    });
 
     HttpServer::new(move || {
         App::new()

@@ -19,4 +19,6 @@ pub const ORCHESTRATOR_DEFAULT_NAME: &str = "orchestrator";
 lazy_static! {
     pub static ref INSTANCE_PATH: PathBuf = env::current_dir().unwrap().join("instance");
     pub static ref CONFIG_PATH: PathBuf = env::current_dir().unwrap().join("instance/config");
+    pub static ref DEVICE_HEALTH_CHECK_INTERVAL_S: u64 = env::var("DEVICE_HEALTH_CHECK_INTERVAL_S").ok().and_then(|u| u.parse().ok()).unwrap();
+    pub static ref DEVICE_HEALTHCHECK_FAILED_THRESHOLD: u32 = env::var("DEVICE_HEALTHCHECK_FAILED_THRESHOLD").ok().and_then(|u| u.parse().ok()).unwrap();
 }
