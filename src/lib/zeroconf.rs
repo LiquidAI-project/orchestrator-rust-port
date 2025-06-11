@@ -8,7 +8,7 @@
 //! to populate the device list.
 
 
-use log::info;
+use log::{error, debug};
 use local_ip_address;
 use std::time::{Duration, Instant};
 use std::env;
@@ -167,14 +167,14 @@ pub async fn browse_services() -> zeroconf::Result<()> {
                 });
                 
             } else {
-                info!("❌ Discovery error.");
+                error!("❌ Discovery error.");
             }
         }));
 
         let event_loop = match browser.browse_services() {
             Ok(loop_) => loop_,
             Err(e) => {
-                info!("❌ Failed to start browsing: {:?}", e);
+                error!("❌ Failed to start browsing: {:?}", e);
                 tokio::time::sleep(Duration::from_secs(scan_interval_secs)).await;
                 continue;
             }
@@ -183,7 +183,7 @@ pub async fn browse_services() -> zeroconf::Result<()> {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(scan_duration_secs) {
             if let Err(e) = event_loop.poll(Duration::from_millis(100)) {
-                info!("❌ Poll error: {:?}", e);
+                error!("❌ Poll error: {:?}", e);
                 break;
             }
         }
@@ -211,7 +211,7 @@ pub fn register_service(zc: WebthingZeroconf) -> anyhow::Result<()> {
 
         service.set_registered_callback(Box::new(|r, _| {
             if let Ok(svc) = r {
-                info!("✅ Responded to mDNS query with: {:?}", svc);
+                debug!("✅ Orchestrator responded to mDNS query with: {:?}", svc);
             }
         }));
 

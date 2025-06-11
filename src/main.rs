@@ -9,25 +9,25 @@ use orchestrator::api::device::{
     run_health_check_loop
 };
 use orchestrator::lib::zeroconf;
-use log::{info, warn, error};
+use log::{error, debug};
 
 // Placeholder handler
 async fn placeholder(_client: web::Data<Client>, req: HttpRequest) -> impl Responder {
     let match_name = req.match_name().unwrap_or("<no match name>");
     let match_pattern = req.match_pattern().unwrap_or("<no match pattern>".to_string());
-    println!("{}, {}, {}", req.full_url().as_str(), match_name, match_pattern);
+    debug!("{}, {}, {}", req.full_url().as_str(), match_name, match_pattern);
     HttpResponse::Ok().json(json!([]))
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
 
-    println!("Orchestrator starting...");
+    println!("\n\nOrchestrator performing initialization tasks..");
 
     // Load enviroment variables from .env if available
     match dotenv::dotenv() {
-        Ok(path) => info!("Loaded .env from {:?}", path),
-        Err(err) => warn!("Could not load .env file: {:?}", err),
+        Ok(path) => println!("... Loaded .env from {:?}", path),
+        Err(err) => println!("Could not load .env file: {:?}", err),
     }
 
     // Initialize logging with default level = info (unless overridden by env)
@@ -44,14 +44,20 @@ async fn main() -> std::io::Result<()> {
     if let Err(e) = zeroconf::register_service(zc) {
         error!("Failed to start mDNS advertisement: {}", e);
     } else {
-        info!("Mdns advertisement started succesfully.");
+        debug!("Mdns advertisement started succesfully.");
     }
+
+    println!("... Device discovery setup done.");
 
     // Start a separate loop to perform continous healthchecks on known devices
     std::thread::spawn(|| {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(run_health_check_loop());
     });
+
+    println!("... Healthcheck loop started");
+
+    println!("✅ Initialization tasks done, starting server ...\n");
 
     HttpServer::new(move || {
         App::new()

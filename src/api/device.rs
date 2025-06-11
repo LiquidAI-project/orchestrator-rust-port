@@ -4,7 +4,7 @@
 //! and healthchecks.
 
 use actix_web::{HttpResponse, Responder};
-use log::{info, warn, debug};
+use log::{info, warn, debug, error};
 use serde_json::{json, Value};
 use sysinfo::{System, Networks};
 use serde::{Serialize, Deserialize};
@@ -89,7 +89,7 @@ pub struct HealthReport {
 /// - Memory usage
 /// - Per-interface network traffic (bytes up/down)
 pub async fn thingi_health() -> impl Responder {
-    info!("Health check done");
+    debug!("✅ Orchestrator health check done");
     let mut sys = System::new_all();
     sys.refresh_all();
     let cpu_usage = sys.global_cpu_usage();
@@ -121,13 +121,13 @@ pub async fn thingi_health() -> impl Responder {
 
 /// Returns the device description of the orchestrator (generated dynamically)
 pub async fn wasmiot_device_description() -> impl Responder {
-    info!("Device description request for orchestrator served");
+    debug!("✅ Orchestrator device description served");
     HttpResponse::Ok().json(get_device_description())
 }
 
 /// Returns the Web of Things description of the orchestrator (read from instance/config)
 pub async fn thingi_description() -> impl Responder {
-    info!("Web of Things description request for orchestrator served");
+    debug!("✅ Orchestrator Web of Things description request served");
     HttpResponse::Ok().json(get_wot_td())
 }
 
@@ -223,7 +223,7 @@ pub async fn process_discovered_devices(devices: Vec<DeviceInfo>) {
 
         // If device did not exist, add it into database
         if let Err(e) = insert_one("device", &device).await {
-            log::error!("❌ Saving new device failed for '{}': {:?}", device.name, e);
+            error!("❌ Saving new device failed for '{}': {:?}", device.name, e);
             continue;
         }
         info!("🆕 Found new device '{}'", device.name);
@@ -234,7 +234,7 @@ pub async fn process_discovered_devices(devices: Vec<DeviceInfo>) {
         if let Some(desc) = fetch_device_description(&device_clone).await {
             let bson_desc = to_bson(&desc).unwrap_or(Bson::Null);
             let _ = update_field::<DeviceInfo>("device", doc! { "name": &device_clone.name }, "description", bson_desc).await;
-            info!("📄 Device description fetched for '{}'", device_clone.name);
+            info!("📄 '{}' device description fetched", device_clone.name);
         }
 
         if let Some(health) = fetch_device_health(&device_clone).await {
@@ -244,7 +244,7 @@ pub async fn process_discovered_devices(devices: Vec<DeviceInfo>) {
             };
             let bson_health = to_bson(&health_report).unwrap_or(Bson::Null);
             let _ = update_field::<DeviceInfo>("device", doc! { "name": &device_clone.name }, "health", bson_health).await;
-            info!("❤️ Healthcheck done for '{}'", device_clone.name);
+            info!("📄 '{}' initial healthcheck done ", device_clone.name);
         }
     }
 }
@@ -286,7 +286,7 @@ async fn fetch_device_health(device: &DeviceInfo) -> Option<serde_json::Value> {
             res.json::<serde_json::Value>().await.ok()
         }
         Err(e) => {
-            log::warn!("Failed to do healthcheck for {}: {}", device.name, e);
+            debug!("Failed to do healthcheck for {}: {}", device.name, e);
             None
         }
         _ => None,
@@ -298,9 +298,9 @@ async fn fetch_device_health(device: &DeviceInfo) -> Option<serde_json::Value> {
 pub async fn run_health_check_loop() {
     loop {  
         if let Err(e) = perform_health_checks().await {
-            log::error!("Health check loop failed: {}", e);
+            error!("Health check loop failed: {}", e);
         } else {
-            info!("✅ Device healthchecks completed");
+            debug!("✅ Device healthchecks completed");
         }
         sleep(Duration::from_secs(*DEVICE_HEALTH_CHECK_INTERVAL_S)).await;
     }
@@ -316,8 +316,14 @@ async fn perform_health_checks() -> mongodb::error::Result<()>{
         .await?;
 
     let now = Utc::now();
+    let mut ok_count = 0;
+    let mut fail_count = 0;
+    let mut inactive_count = 0;
 
     for mut device in devices {
+        if device.status == "inactive" {
+            inactive_count += 1;
+        }
         match fetch_device_health(&device).await {
             Some(report) => {
                 device.health = Some(HealthReport {
@@ -326,6 +332,7 @@ async fn perform_health_checks() -> mongodb::error::Result<()>{
                 });
                 device.failed_health_check_count = 0;
                 device.ok_health_check_count += 1;
+                ok_count += 1;
 
                 if device.status != "active" && device.ok_health_check_count >= *DEVICE_HEALTHCHECK_FAILED_THRESHOLD {
                     device.status = "active".to_string();
@@ -339,6 +346,7 @@ async fn perform_health_checks() -> mongodb::error::Result<()>{
             None => {
                 device.ok_health_check_count = 0;
                 device.failed_health_check_count += 1;
+                fail_count += 1;
                 device.health = Some(HealthReport {
                     report: None,
                     time_of_query: now,
@@ -369,6 +377,11 @@ async fn perform_health_checks() -> mongodb::error::Result<()>{
         };
         collection.update_one(doc! { "name": &device.name }, update).await?;
     }
+
+    info!(
+        "\n❤️ Health check summary:\n {} succeeded, {} failed, {} inactive devices",
+        ok_count, fail_count, inactive_count
+    );
 
     Ok(())
 }
