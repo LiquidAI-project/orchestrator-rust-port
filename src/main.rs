@@ -13,6 +13,7 @@ use orchestrator::api::device::{
     delete_device_by_name,
     register_device
 };
+use orchestrator::api::logs::{post_supervisor_log, get_supervisor_logs};
 use orchestrator::lib::zeroconf;
 use log::{error, debug};
 use actix_web::middleware::NormalizePath;
@@ -118,11 +119,11 @@ async fn main() -> std::io::Result<()> {
 
             // Log related routes (file: routes/logs)
             // Status of implementations:
-            // ❌ GET /device/logs
-            // ❌ POST /device/logs
+            // ✅ GET /device/logs
+            // ✅ POST /device/logs
             .service(web::resource("/device/logs").name("/device/logs")
-                .route(web::get().to(placeholder)) // Get all supervisor logs from database
-                .route(web::post().to(placeholder))) // Save a supervisor log to database
+                .route(web::get().to(get_supervisor_logs)) // Get all supervisor logs from database
+                .route(web::post().to(post_supervisor_log))) // Save a supervisor log to database
 
             // Module related routes (file: routes/modules)
             // Status of implementations:

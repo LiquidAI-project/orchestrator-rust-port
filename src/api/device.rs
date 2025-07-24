@@ -268,6 +268,15 @@ pub async fn process_discovered_devices(devices: Vec<DeviceInfo>) {
 
         let device_clone = device.clone();
 
+        // First register the orchestrator to new supervisor. Ignore errors
+        // where the registration endpoint is not found, since some supervisors
+        // might not have it implemented.
+        if let Err(e) = register_orchestrator(&device_clone).await {
+            warn!("❗️ Failed to register orchestrator for device '{}': {}", device_clone.name, e);
+        } else {
+            info!("✅ Registered orchestrator for device '{}'", device_clone.name);
+        }
+
         // For the new device, get the device description and run first health check
         if let Some(desc) = fetch_device_description(&device_clone).await {
             let bson_desc = to_bson(&desc).unwrap_or(Bson::Null);
@@ -313,14 +322,28 @@ async fn fetch_device_description(device: &DeviceInfo) -> Option<serde_json::Val
 /// Do a healthcheck on a device.
 /// Returns parsed JSON on success.
 async fn fetch_device_health(device: &DeviceInfo) -> Option<serde_json::Value> {
+    let h = reqwest::header::HeaderName::from_bytes(b"X-Forwarded-For").unwrap();
+    let mut headers = reqwest::header::HeaderMap::new();
+    let public_host = std::env::var("PUBLIC_HOST").unwrap_or_else(|_| {
+        log::warn!("PUBLIC_HOST environment variable is not set. Using default value 'localhost'");
+        "localhost".to_string()
+    });
+    headers.insert(h, public_host.parse().unwrap());
     let url = format!(
         "http://{}:{}/health",
         device.communication.addresses[0],
         device.communication.port
     );
 
-    match reqwest::get(&url).await {
+    let client = reqwest::Client::new();
+    match client.get(&url).headers(headers).send().await {
         Ok(res) if res.status().is_success() => {
+            // If showing debug logs, log the custom header
+            if let Some(header_value) = res.headers().get("Custom-Orchestrator-Set") {
+                if let Ok(value) = header_value.to_str() {
+                    debug!("Custom-Orchestrator-Set header: {}", value);
+                }
+            }
             res.json::<serde_json::Value>().await.ok()
         }
         Err(e) => {
@@ -561,4 +584,49 @@ pub async fn register_device(info: web::Json<ManualDeviceRegistration>) -> impl 
     }
 
     HttpResponse::NoContent().finish()
+}
+
+/// Registers the orchestrator with the supervisor.
+/// This is used to inform the supervisor about the orchestrator's URL.
+pub async fn register_orchestrator(device: &DeviceInfo) -> Result<(), reqwest::Error> {
+    let public_host = std::env::var("PUBLIC_HOST").unwrap_or_else(|_| {
+        log::warn!("PUBLIC_HOST environment variable is not set. Using default value 'localhost'");
+        "localhost".to_string()
+    });
+    let public_port = std::env::var("PUBLIC_PORT").unwrap_or_else(|_| {
+        log::warn!("PUBLIC_PORT environment variable is not set. Using default value '3000'");
+        "3000".to_string()
+    });
+    let orchestrator_url = format!("http://{}:{}", public_host, public_port);
+
+    debug!("Registering orchestrator to supervisor with following url {:?}", orchestrator_url);
+    let url = format!(
+        "http://{}:{}/register",
+        device.communication.addresses[0],
+        device.communication.port
+    );
+    if device.communication.addresses[0] == public_host && device.communication.port.to_string() == public_port {
+        info!("Skipping orchestrator self-registration.");
+        return Ok(());
+    }
+    let client = reqwest::Client::new();
+    let payload = json!({ "url": orchestrator_url });
+
+    let response = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        log::info!("Successfully registered orchestrator at {}", url);
+        Ok(())
+    } else {
+        log::warn!(
+            "Failed to register orchestrator at {}: status {}",
+            url,
+            response.status()
+        );
+        Ok(())
+    }
 }
