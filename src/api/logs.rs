@@ -7,6 +7,7 @@ use crate::lib::mongodb::{get_collection};
 use futures::stream::TryStreamExt;
 use actix_web::web::Form;
 
+/// Structure for the supervisor log data
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SupervisorLog {
     #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
@@ -18,6 +19,7 @@ pub struct SupervisorLog {
     pub content: serde_json::Value, // dynamic keys from logData
 }
 
+/// Endpoint to receive and save supervisor logs
 pub async fn post_supervisor_log(form: Form<std::collections::HashMap<String, String>>) -> impl Responder {
     if let Some(log_data_str) = form.get("logData") {
         let mut log_data: Value = match serde_json::from_str(log_data_str) {
@@ -44,7 +46,7 @@ pub async fn post_supervisor_log(form: Form<std::collections::HashMap<String, St
     }
 }
 
-
+/// Endpoint to retrieve supervisor logs with optional filtering 
 pub async fn get_supervisor_logs(query: web::Query<std::collections::HashMap<String, String>>) -> impl Responder {
     let after_filter = query.get("after")
         .and_then(|after| DateTime::parse_from_rfc3339(after).ok())

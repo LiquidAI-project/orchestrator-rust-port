@@ -14,6 +14,12 @@ use orchestrator::api::device::{
     register_device
 };
 use orchestrator::api::logs::{post_supervisor_log, get_supervisor_logs};
+use orchestrator::api::data_source_cards::{
+    get_data_source_card, 
+    create_data_source_card,
+    delete_all_data_source_cards,
+    delete_data_source_card_by_nodeid
+};
 use orchestrator::lib::zeroconf;
 use log::{error, debug};
 use actix_web::middleware::NormalizePath;
@@ -176,20 +182,16 @@ async fn main() -> std::io::Result<()> {
 
             // Data source card related routes (file: routes/dataSourceCards)
             // Status of implementations:
-            // ❌ GET /dataSourceCards
-            // ❌ POST /dataSourceCards
-            // ❌ DELETE /dataSourceCards
-            // ❌ GET /dataSourceCards/{card_id}
-            // ❌ PUT /dataSourceCards/{card_id}
-            // ❌ DELETE /dataSourceCards/{card_id}
+            // ✅ GET /dataSourceCards
+            // ✅ POST /dataSourceCards
+            // ✅ DELETE /dataSourceCards
+            // ✅ DELETE /dataSourceCards/{node_id}
             .service(web::resource("/dataSourceCards").name("/dataSourceCards")
-                .route(web::get().to(placeholder)) // Get all data source cards
-                .route(web::post().to(placeholder)) // Create a new data source card
-                .route(web::delete().to(placeholder))) // Delete all data source cards (Doesnt exist in original)
-            .service(web::resource("/dataSourceCards/{card_id}").name("/dataSourceCards/{card_id}")
-                .route(web::get().to(placeholder)) //Get a specific data source card (Doesnt exist in original)
-                .route(web::put().to(placeholder)) // Update a specific data source card (Doesnt exist in original)
-                .route(web::delete().to(placeholder))) // Delete a specific data source card (Doesnt exist in original)
+                .route(web::get().to(get_data_source_card)) // Get all data source cards
+                .route(web::post().to(create_data_source_card)) // Create a new data source card
+                .route(web::delete().to(delete_all_data_source_cards))) // Delete all data source cards (Doesnt exist in original)
+            .service(web::resource("/dataSourceCards/{node_id}").name("/dataSourceCards/{node_id}")
+                .route(web::delete().to(delete_data_source_card_by_nodeid))) // Delete a specific data source card (Doesnt exist in original)
 
             // Deployment certificate related routes (file: routes/deploymentCertificates)
             // Status of implementations:
