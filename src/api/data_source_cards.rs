@@ -77,7 +77,7 @@ pub async fn create_data_source_card(card: web::Json<Value>) -> impl Responder {
 pub async fn get_data_source_card(query: web::Query<std::collections::HashMap<String, String>>) -> impl Responder {
     let collection = get_collection::<Document>("datasourcecards").await;
 
-    // Ensure index on dateReceived
+    // Ensure index on date_received
     let index_model = mongodb::IndexModel::builder().keys(doc! { "date_received": 1 }).build();
     let _ = collection.create_index(index_model).await;
 

@@ -20,6 +20,12 @@ use orchestrator::api::data_source_cards::{
     delete_all_data_source_cards,
     delete_data_source_card_by_nodeid
 };
+use orchestrator::api::node_cards::{
+    create_node_card, 
+    get_node_cards, 
+    delete_all_node_cards, 
+    delete_node_card_by_id
+};
 use orchestrator::lib::zeroconf;
 use log::{error, debug};
 use actix_web::middleware::NormalizePath;
@@ -218,20 +224,16 @@ async fn main() -> std::io::Result<()> {
 
             // Node card related routes (file: routes/nodeCards)
             // Status of implementations:
-            // ❌ GET /nodeCards
-            // ❌ POST /nodeCards
-            // ❌ DELETE /nodeCards
-            // ❌ GET /nodeCards/{card_id}
-            // ❌ PUT /nodeCards/{card_id}
-            // ❌ DELETE /nodeCards/{card_id}
+            // ✅ GET /nodeCards
+            // ✅ POST /nodeCards
+            // ✅ DELETE /nodeCards
+            // ✅ DELETE /nodeCards/{card_id}
             .service(web::resource("/nodeCards").name("/nodeCards")
-                .route(web::get().to(placeholder)) // Get all node cards
-                .route(web::post().to(placeholder)) // Create a new node card
-                .route(web::delete().to(placeholder))) // Delete all node cards (Doesnt exist in original version)
+                .route(web::get().to(get_node_cards)) // Get all node cards
+                .route(web::post().to(create_node_card)) // Create a new node card
+                .route(web::delete().to(delete_all_node_cards))) // Delete all node cards (Doesnt exist in original version)
             .service(web::resource("/nodeCards/{card_id}").name("/nodeCards/{card_id}")
-                .route(web::get().to(placeholder)) // Get a specific node card (Doesnt exist in original version)
-                .route(web::put().to(placeholder)) // Update a specific node card (Doesnt exist in original version)
-                .route(web::delete().to(placeholder))) // Delete a specific node card (Doesnt exist in original version)
+                .route(web::delete().to(delete_node_card_by_id))) // Delete a specific node card (Doesnt exist in original version)
 
             // Zone and risk level related routes (file: routes/zonesAndRiskLevels)
             // TODO: Should multiple definitions for zones and risk levels be allowed
