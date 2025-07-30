@@ -26,6 +26,11 @@ use orchestrator::api::node_cards::{
     delete_all_node_cards, 
     delete_node_card_by_id
 };
+use orchestrator::api::zones_and_risk_levels::{
+    parse_zones_and_risk_levels, 
+    get_zones_and_risk_levels, 
+    delete_all_zones_and_risk_levels
+};
 use orchestrator::lib::zeroconf;
 use log::{error, debug};
 use actix_web::middleware::NormalizePath;
@@ -238,13 +243,13 @@ async fn main() -> std::io::Result<()> {
             // Zone and risk level related routes (file: routes/zonesAndRiskLevels)
             // TODO: Should multiple definitions for zones and risk levels be allowed
             // Status of implementations:
-            // ❌ GET /zoneRiskLevels
-            // ❌ POST /zoneRiskLevels
-            // ❌ DELETE /zoneRiskLevels
+            // ✅ GET /zoneRiskLevels
+            // ✅ POST /zoneRiskLevels
+            // ✅ DELETE /zoneRiskLevels
             .service(web::resource("/zoneRiskLevels").name("/zoneRiskLevels")
-                .route(web::get().to(placeholder)) // Get zone and risk level card
-                .route(web::post().to(placeholder)) // Create a new zone and risk level card
-                .route(web::delete().to(placeholder))) // Delete all zones and risk levels (Doesnt exist in original version)
+                .route(web::get().to(get_zones_and_risk_levels)) // Get zone and risk level card
+                .route(web::post().to(parse_zones_and_risk_levels)) // Create a new zone and risk level card
+                .route(web::delete().to(delete_all_zones_and_risk_levels))) // Delete all zones and risk levels (Doesnt exist in original version)
 
             // Miscellaneous routes, none of these exist in original version, but these are possible improvements for functionality
             // Status of implementations:
