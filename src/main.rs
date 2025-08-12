@@ -31,6 +31,9 @@ use orchestrator::api::zones_and_risk_levels::{
     get_zones_and_risk_levels, 
     delete_all_zones_and_risk_levels
 };
+use orchestrator::api::module::{
+    create_module
+};
 use orchestrator::lib::zeroconf;
 use log::{error, debug};
 use actix_web::middleware::NormalizePath;
@@ -144,7 +147,7 @@ async fn main() -> std::io::Result<()> {
 
             // Module related routes (file: routes/modules)
             // Status of implementations:
-            // ❌ POST /file/module
+            // ✅ POST /file/module
             // ❌ GET /file/module
             // ❌ DELETE /file/module
             // ❌ GET /file/module/{module_id}
@@ -153,7 +156,7 @@ async fn main() -> std::io::Result<()> {
             // ❌ GET /file/module/{module_id}/description
             // ❌ GET /file/module/{module_id}/{file_name}
             .service(web::resource("/file/module").name("/file/module")
-                .route(web::post().to(placeholder)) // Post a new module (requires file upload)
+                .route(web::post().to(create_module)) // Post a new module (requires file upload)
                 .route(web::get().to(placeholder)) // Get a list of all modules (doesnt explicitly exist in original one)
                 .route(web::delete().to(placeholder))) // Delete all modules (doesnt explicitly exist in original one)
             .service(web::resource("/file/module/{module_id}").name("/file/module/{module_id}")

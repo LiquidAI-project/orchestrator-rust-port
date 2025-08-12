@@ -15,7 +15,16 @@ pub const DEFAULT_URL_SCHEME: &str = "http";
 /// Default name of the orchestrator
 pub const ORCHESTRATOR_DEFAULT_NAME: &str = "orchestrator";
 
-// Get some env vars, preventing the need to read them from env more than once during runtime.
+/// Default directory where modules are stored
+pub const MODULE_DIR: &str = "./files/wasm";
+
+/// Directory where execution input files are stored
+pub const EXECUTION_INPUT_DIR: &str = "./files/exec";
+
+/// Name of the initialization function for Wasm modules
+pub const WASMIOT_INIT_FUNCTION_NAME: &str = "_wasmiot_init";
+
+/// Get some env vars, preventing the need to read them from env more than once during runtime.
 lazy_static! {
     pub static ref INSTANCE_PATH: PathBuf = env::current_dir().unwrap().join("instance");
     pub static ref CONFIG_PATH: PathBuf = env::current_dir().unwrap().join("instance/config");

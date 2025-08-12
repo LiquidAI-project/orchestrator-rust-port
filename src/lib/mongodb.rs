@@ -33,9 +33,10 @@ pub async fn find_one<T: DeserializeOwned + Unpin + Send + Sync>(
 pub async fn insert_one<T: Serialize + DeserializeOwned + Unpin + Send + Sync>(
     collection_name: &str,
     document: &T,
-) -> mongodb::error::Result<()> {
+) -> mongodb::error::Result<Bson> {
     let collection = get_collection::<T>(collection_name).await;
-    collection.insert_one(document).await.map(|_| ())
+    let result = collection.insert_one(document).await?;
+    Ok(result.inserted_id)
 }
 
 /// Update a single BSON field on a document matching the query.
