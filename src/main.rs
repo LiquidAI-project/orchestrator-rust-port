@@ -34,6 +34,12 @@ use orchestrator::api::zones_and_risk_levels::{
 use orchestrator::api::module::{
     create_module
 };
+use orchestrator::api::module_cards::{
+    create_module_card, 
+    get_module_cards,
+    delete_all_module_cards, 
+    delete_module_card_by_id
+};
 use orchestrator::lib::zeroconf;
 use log::{error, debug};
 use actix_web::middleware::NormalizePath;
@@ -215,20 +221,16 @@ async fn main() -> std::io::Result<()> {
 
             // Module card related routes (file: routes/moduleCards)
             // Status of implementations:
-            // ❌ GET /moduleCards
-            // ❌ POST /moduleCards
-            // ❌ DELETE /moduleCards
-            // ❌ GET /moduleCards/{card_id}
-            // ❌ PUT /moduleCards/{card_id}
-            // ❌ DELETE /moduleCards/{card_id}
+            // ✅ GET /moduleCards
+            // ✅ POST /moduleCards
+            // ✅ DELETE /moduleCards
+            // ✅ DELETE /moduleCards/{card_id}
             .service(web::resource("/moduleCards").name("/moduleCards")
-                .route(web::get().to(placeholder)) // Get all module cards
-                .route(web::post().to(placeholder)) // Create a new module card
-                .route(web::delete().to(placeholder))) // Delete all module cards (Doesnt exist in original version)
+                .route(web::get().to(get_module_cards)) // Get all module cards
+                .route(web::post().to(create_module_card)) // Create a new module card
+                .route(web::delete().to(delete_all_module_cards))) // Delete all module cards (Doesnt exist in original version)
             .service(web::resource("/moduleCards/{card_id}").name("/moduleCards/{card_id}")
-                .route(web::get().to(placeholder)) // Get a specific module card (Doesnt exist in original version)
-                .route(web::put().to(placeholder)) // Update a specific module card (Doesnt exist in original version)
-                .route(web::delete().to(placeholder))) // Delete a specific module card (Doesnt exist in original version)
+                .route(web::delete().to(delete_module_card_by_id))) // Delete a specific module card (Doesnt exist in original version)
 
             // Node card related routes (file: routes/nodeCards)
             // Status of implementations:
