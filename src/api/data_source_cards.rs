@@ -15,6 +15,7 @@ pub struct DataSourceCard {
     #[serde(rename = "risk-level")]
     pub risk_level: String,
     pub nodeid: String,
+    #[serde(rename = "dateReceived", with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub date_received: DateTime<Utc>,
 }
 
@@ -81,11 +82,12 @@ pub async fn get_data_source_card(query: web::Query<std::collections::HashMap<St
     let index_model = mongodb::IndexModel::builder().keys(doc! { "date_received": 1 }).build();
     let _ = collection.create_index(index_model).await;
 
-    // Create a filter if query parameters were given
+    // Optional time filter
     let mut filter = doc! {};
     if let Some(after) = query.get("after") {
-        if let Ok(after_date) = DateTime::parse_from_rfc3339(after) {
-            filter = doc! { "date_received": { "$gt": mongodb::bson::DateTime::from_millis(after_date.timestamp_millis()) } };
+        if let Ok(dt) = DateTime::parse_from_rfc3339(after) {
+            let dt_utc = dt.with_timezone(&Utc);
+            filter = doc! { "dateReceived": { "$gt": mongodb::bson::DateTime::from_chrono(dt_utc) } };
         }
     }
 
