@@ -32,7 +32,14 @@ use orchestrator::api::zones_and_risk_levels::{
     delete_all_zones_and_risk_levels
 };
 use orchestrator::api::module::{
-    create_module
+    create_module,
+    delete_all_modules,
+    delete_module_by_id,
+    get_all_modules,
+    get_module_by_id,
+    describe_module,
+    get_module_description_by_id,
+    get_module_datafile
 };
 use orchestrator::api::module_cards::{
     create_module_card, 
@@ -154,26 +161,26 @@ async fn main() -> std::io::Result<()> {
             // Module related routes (file: routes/modules)
             // Status of implementations:
             // ✅ POST /file/module
-            // ❌ GET /file/module
-            // ❌ DELETE /file/module
-            // ❌ GET /file/module/{module_id}
-            // ❌ DELETE /file/module/{module_id}
-            // ❌ POST /file/module/{module_id}/upload
-            // ❌ GET /file/module/{module_id}/description
-            // ❌ GET /file/module/{module_id}/{file_name}
+            // ✅ GET /file/module
+            // ✅ DELETE /file/module
+            // ✅ GET /file/module/{module_id}
+            // ✅ DELETE /file/module/{module_id}
+            // ✅ POST /file/module/{module_id}/upload
+            // ✅ GET /file/module/{module_id}/description
+            // ✅ GET /file/module/{module_id}/{file_name}
             .service(web::resource("/file/module").name("/file/module")
                 .route(web::post().to(create_module)) // Post a new module (requires file upload)
-                .route(web::get().to(placeholder)) // Get a list of all modules (doesnt explicitly exist in original one)
-                .route(web::delete().to(placeholder))) // Delete all modules (doesnt explicitly exist in original one)
+                .route(web::get().to(get_all_modules)) // Get a list of all modules
+                .route(web::delete().to(delete_all_modules))) // Delete all modules
             .service(web::resource("/file/module/{module_id}").name("/file/module/{module_id}")
-                .route(web::get().to(placeholder)) // Gets a specific module
-                .route(web::delete().to(placeholder))) // Deletes a specific module
+                .route(web::get().to(get_module_by_id)) // Gets a specific module
+                .route(web::delete().to(delete_module_by_id))) // Deletes a specific module
             .service(web::resource("/file/module/{module_id}/upload").name("/file/module/{module_id}/upload")
-                .route(web::post().to(placeholder))) // Uploads module description for a specific module?
+                .route(web::post().to(describe_module))) // Uploads module description for a specific module?
             .service(web::resource("/file/module/{module_id}/description").name("/file/module/{module_id}/description")
-                .route(web::get().to(placeholder))) // Gets the module description of a specific module
+                .route(web::get().to(get_module_description_by_id))) // Gets the module description of a specific module
             .service(web::resource("/file/module/{module_id}/{file_name}").name("/file/module/{module_id}/{file_name}")
-                .route(web::get().to(placeholder))) // Serves a file related to module based on module id and file extension/name
+                .route(web::get().to(get_module_datafile))) // Serves a file related to module based on module id and file extension/name
 
             // Manifest/deployment related routes (file: routes/deployment)
             // Status of implementations:

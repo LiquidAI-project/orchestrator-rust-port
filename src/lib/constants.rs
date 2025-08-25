@@ -21,10 +21,14 @@ pub const MODULE_DIR: &str = "./files/wasm";
 /// Directory where execution input files are stored
 pub const EXECUTION_INPUT_DIR: &str = "./files/exec";
 
+/// Directory where files given for module execution in advance are stored
+/// (Essentially deployment mounts)
+pub const MOUNT_DIR: &str = "./files/mounts";
+
 /// Name of the initialization function for Wasm modules
 pub const WASMIOT_INIT_FUNCTION_NAME: &str = "_wasmiot_init";
 
-/// Get some env vars, preventing the need to read them from env more than once during runtime.
+// Get some env vars, preventing the need to read them from env more than once during runtime.
 lazy_static! {
     pub static ref INSTANCE_PATH: PathBuf = env::current_dir().unwrap().join("instance");
     pub static ref CONFIG_PATH: PathBuf = env::current_dir().unwrap().join("instance/config");
