@@ -39,7 +39,8 @@ use orchestrator::api::module::{
     get_module_by_id,
     describe_module,
     get_module_description_by_id,
-    get_module_datafile
+    get_module_datafile,
+    get_module_wasm
 };
 use orchestrator::api::module_cards::{
     create_module_card, 
@@ -168,6 +169,7 @@ async fn main() -> std::io::Result<()> {
             // ✅ POST /file/module/{module_id}/upload
             // ✅ GET /file/module/{module_id}/description
             // ✅ GET /file/module/{module_id}/{file_name}
+            // ✅ GET /file/module/{module_id}/wasm
             .service(web::resource("/file/module").name("/file/module")
                 .route(web::post().to(create_module)) // Post a new module (requires file upload)
                 .route(web::get().to(get_all_modules)) // Get a list of all modules
@@ -179,6 +181,8 @@ async fn main() -> std::io::Result<()> {
                 .route(web::post().to(describe_module))) // Uploads module description for a specific module?
             .service(web::resource("/file/module/{module_id}/description").name("/file/module/{module_id}/description")
                 .route(web::get().to(get_module_description_by_id))) // Gets the module description of a specific module
+            .service(web::resource("/file/module/{module_id}/wasm").name("/file/module/{module_id}/wasm")
+                .route(web::get().to(get_module_wasm))) // Gets the wasm file related to the module
             .service(web::resource("/file/module/{module_id}/{file_name}").name("/file/module/{module_id}/{file_name}")
                 .route(web::get().to(get_module_datafile))) // Serves a file related to module based on module id and file extension/name
 

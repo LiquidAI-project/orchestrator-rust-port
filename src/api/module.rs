@@ -1229,3 +1229,34 @@ pub async fn get_module_datafile(
     named = named.set_content_type(guessed);
     Ok(named)
 }
+
+
+/// Endpoint for returning a wasm module (the binary file itself) by a modules id or name
+pub async fn get_module_wasm(
+    _req: HttpRequest,
+    path: web::Path<String>,
+) -> Result<NamedFile> {
+    let id_str = path.into_inner();
+    let coll = get_collection::<Document>("module").await;
+    let filter = module_filter(&id_str);
+
+    // Get the path to the module
+    let doc = coll
+        .find_one(filter)
+        .await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(e.to_string()))?
+        .ok_or_else(|| actix_web::error::ErrorNotFound("Module not found"))?;
+    let wasm_doc = doc
+        .get_document("wasm")
+        .map_err(|_| actix_web::error::ErrorNotFound("No wasm for this module"))?;
+    let path = wasm_doc
+        .get_str("path")
+        .map_err(|_| actix_web::error::ErrorInternalServerError("Corrupt module (missing wasm.path)"))?;
+
+    // Return the module with content type set to application/wasm
+    let mut named = NamedFile::open(path)
+        .map_err(|_| actix_web::error::ErrorNotFound("Wasm file not found on disk"))?;
+    let wasm_mime: mime_guess::mime::Mime = "application/wasm".parse().unwrap();
+    named = named.set_content_type(wasm_mime);
+    Ok(named)
+}
