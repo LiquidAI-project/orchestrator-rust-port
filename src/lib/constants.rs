@@ -28,6 +28,14 @@ pub const MOUNT_DIR: &str = "./files/mounts";
 /// Name of the initialization function for Wasm modules
 pub const WASMIOT_INIT_FUNCTION_NAME: &str = "_wasmiot_init";
 
+// TODO: Is this kind of filtering necessary?
+pub const SUPPORTED_FILE_TYPES: &[&str] = &[
+    "application/octet-stream",
+    "image/jpeg",
+    "image/png",
+    // TODO: Something more here?
+];
+
 // Get some env vars, preventing the need to read them from env more than once during runtime.
 lazy_static! {
     pub static ref INSTANCE_PATH: PathBuf = env::current_dir().unwrap().join("instance");

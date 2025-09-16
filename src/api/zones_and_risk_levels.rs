@@ -1,57 +1,77 @@
 use actix_web::{web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use mongodb::bson::{doc, Document};
-use crate::lib::mongodb::get_collection;
 use futures::stream::TryStreamExt;
+use crate::lib::mongodb::get_collection;
+use crate::structs::zones::Zones;
 
-/// Structure for zones and their allowed risk levels
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ZoneRiskMapping {
     pub zone: String,
     pub allowed_risk_levels: Vec<String>,
 }
 
-/// Structure for risk levels
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RiskLevelsMetadata {
     pub levels: Vec<String>,
-    pub last_updated: DateTime<Utc>,
+    pub last_updated: chrono::DateTime<Utc>,
 }
 
-/// Parses zones and risk levels from an ODRL document and saves them to the database
+/// Endpoint for receiving and parsing a json that contains the zone and risk level definitions
 pub async fn parse_zones_and_risk_levels(card: web::Json<Value>) -> impl Responder {
-    log::info!("Received zone and risk-level definitions: {:?}", card);
+    log::debug!("Received zone and risk-level definitions: {:?}", card);
 
-    // Extract zones and risk levels
     let (zone_risk_mappings, risk_levels) = extract_zone_and_risk_level_mappings(&card);
-
     let collection = get_collection::<Document>("zones").await;
+    let now = Utc::now();
 
-    // Save zones and risk levels to the database
     for zone in &zone_risk_mappings {
-        let _ = collection.update_one(
-            doc! { "zone": &zone.zone },
-            doc! { "$set": { "allowed_risk_levels": &zone.allowed_risk_levels } }
-        ).upsert(true).await;
+        let z = Zones {
+            id: None,
+            zone: Some(zone.zone.clone()),
+            allowed_risk_levels: Some(zone.allowed_risk_levels.clone()),
+            r#type: None,
+            last_updated: now,
+            levels: None,
+        };
+        let set_doc = mongodb::bson::to_document(&z).expect("serialize zone doc");
+        let _ = collection
+            .update_one(
+                doc! { "zone": &zone.zone },
+                doc! { "$set": set_doc }
+            )
+            .upsert(true)
+            .await;
     }
-    let risk_levels_metadata = RiskLevelsMetadata {
-        levels: risk_levels.clone(),
-        last_updated: Utc::now(),
+
+    let risk_levels_doc = Zones {
+        id: None,
+        zone: None,
+        allowed_risk_levels: None,
+        r#type: Some("riskLevels".to_string()),
+        last_updated: now,
+        levels: Some(risk_levels.clone()),
     };
-    let _ = collection.update_one(
-        doc! { "type": "riskLevels" },
-        doc! { "$set": mongodb::bson::to_document(&risk_levels_metadata).unwrap() },
-    ).upsert(true).await;
+    let set_doc = mongodb::bson::to_document(&risk_levels_doc).expect("serialize riskLevels doc");
+    let _ = collection
+        .update_one(
+            doc! { "type": "riskLevels" },
+            doc! { "$set": set_doc }
+        )
+        .upsert(true)
+        .await;
+
     HttpResponse::Ok().json(json!({
         "message": "Zone and risk-level definitions parsed and saved successfully",
         "zones": zone_risk_mappings,
-        "riskLevels": risk_levels
+        "riskLevels": RiskLevelsMetadata { levels: risk_levels, last_updated: now },
     }))
 }
 
-/// Extracts zones and risk levels from an ODRL document
+
+/// Helper function for extracting the zones and risk levels from a given json
 fn extract_zone_and_risk_level_mappings(card: &Value) -> (Vec<ZoneRiskMapping>, Vec<String>) {
     let mut zone_risk_mappings: Vec<ZoneRiskMapping> = Vec::new();
     let mut risk_levels_set = std::collections::BTreeSet::new();
@@ -80,7 +100,7 @@ fn extract_zone_and_risk_level_mappings(card: &Value) -> (Vec<ZoneRiskMapping>, 
                                 existing_zone.allowed_risk_levels.push(risk_level.clone());
                             } else {
                                 zone_risk_mappings.push(ZoneRiskMapping {
-                                    zone: zone,
+                                    zone,
                                     allowed_risk_levels: vec![risk_level.clone()],
                                 });
                             }
@@ -95,9 +115,10 @@ fn extract_zone_and_risk_level_mappings(card: &Value) -> (Vec<ZoneRiskMapping>, 
     (zone_risk_mappings, risk_levels)
 }
 
-/// Get all zones and risk-levels
+
+/// Endpoint for getting the zone and risk level definitions
 pub async fn get_zones_and_risk_levels() -> impl Responder {
-    let collection = get_collection::<Document>("zones").await;
+    let collection = get_collection::<Zones>("zones").await;
     let mut cursor = match collection.find(doc! { "zone": { "$exists": true } }).await {
         Ok(cursor) => cursor,
         Err(e) => {
@@ -105,27 +126,35 @@ pub async fn get_zones_and_risk_levels() -> impl Responder {
             return HttpResponse::InternalServerError().json(json!({ "message": "Error querying zones" }));
         }
     };
-    let mut zones = Vec::new();
+    let mut zones_out = Vec::new();
     while let Some(doc) = cursor.try_next().await.unwrap_or(None) {
-        match mongodb::bson::from_document::<ZoneRiskMapping>(doc) {
-            Ok(zone) => zones.push(zone),
-            Err(e) => {
-                log::warn!("Failed to deserialize zone mapping: {}", e);
-                continue;
-            }
+        if let (Some(zone), Some(allowed)) = (doc.zone.clone(), doc.allowed_risk_levels.clone()) {
+            zones_out.push(ZoneRiskMapping {
+                zone,
+                allowed_risk_levels: allowed,
+            });
         }
     }
-    let risk_levels_doc = collection.find_one(doc! { "type": "riskLevels" }).await.ok().flatten();
-    let risk_levels = risk_levels_doc
-        .and_then(|doc| mongodb::bson::from_document::<RiskLevelsMetadata>(doc).ok());
+
+    let risk_levels_doc = get_collection::<Zones>("zones")
+        .await
+        .find_one(doc! { "type": "riskLevels" })
+        .await
+        .ok()
+        .flatten();
+    let risk_levels = risk_levels_doc.as_ref().map(|z| RiskLevelsMetadata {
+        levels: z.levels.clone().unwrap_or_default(),
+        last_updated: z.last_updated,
+    });
 
     HttpResponse::Ok().json(json!({
-        "zones": zones,
+        "zones": zones_out,
         "riskLevels": risk_levels
     }))
 }
 
-/// Delete all zones and risk-levels
+
+/// Endpoint for deleting all zones and risk levels
 pub async fn delete_all_zones_and_risk_levels() -> impl Responder {
     let collection = get_collection::<Document>("zones").await;
     match collection.delete_many(doc! {}).await {

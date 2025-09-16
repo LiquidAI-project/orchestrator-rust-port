@@ -13,7 +13,10 @@ use orchestrator::api::device::{
     delete_device_by_name,
     register_device
 };
-use orchestrator::api::logs::{post_supervisor_log, get_supervisor_logs};
+use orchestrator::api::logs::{
+    post_supervisor_log, 
+    get_supervisor_logs
+};
 use orchestrator::api::data_source_cards::{
     get_data_source_card, 
     create_data_source_card,
@@ -48,6 +51,17 @@ use orchestrator::api::module_cards::{
     delete_all_module_cards, 
     delete_module_card_by_id
 };
+use orchestrator::api::deployment::{
+    get_deployments,
+    get_deployment,
+    create_deployment,
+    update_deployment,
+    delete_deployments,
+    delete_deployment,
+    http_deploy
+};
+use orchestrator::api::execution::execute;
+use orchestrator::api::deployment_certificates::get_deployment_certificates;
 use orchestrator::lib::zeroconf;
 use log::{error, debug};
 use actix_web::middleware::NormalizePath;
@@ -117,9 +131,6 @@ async fn main() -> std::io::Result<()> {
                 NormalizePath::trim()
             )
 
-            // Add the client so it can be used in every route
-            // .app_data(web::Data::new(client.clone()))
-
             // Basic routes related to device information and health status
             // Status of implementations:
             // ✅ GET /.well-known/wasmiot-device-description
@@ -188,28 +199,28 @@ async fn main() -> std::io::Result<()> {
 
             // Manifest/deployment related routes (file: routes/deployment)
             // Status of implementations:
-            // ❌ GET /file/manifest
-            // ❌ POST /file/manifest
-            // ❌ DELETE /file/manifest
-            // ❌ GET /file/manifest/{deployment_id}
-            // ❌ POST /file/manifest/{deployment_id}
-            // ❌ PUT /file/manifest/{deployment_id}
-            // ❌ DELETE /file/manifest/{deployment_id}
-            .service(web::resource("/file/manifest").name("/file/manifest") // TODO: For consistency, choose name to be either deployment or manifest, not both
-                .route(web::get().to(placeholder)) // Get a list of all deployments/manifests
-                .route(web::post().to(placeholder)) // Create a new deployment/manifest
-                .route(web::delete().to(placeholder))) // Delete all deployments/manifests
+            // ✅ GET /file/manifest
+            // ✅ POST /file/manifest
+            // ✅ DELETE /file/manifest
+            // ✅ GET /file/manifest/{deployment_id}
+            // ✅ POST /file/manifest/{deployment_id}
+            // ✅ PUT /file/manifest/{deployment_id}
+            // ✅ DELETE /file/manifest/{deployment_id}
+            .service(web::resource("/file/manifest").name("/file/manifest")
+                .route(web::get().to(get_deployments)) // Get a list of all deployments/manifests
+                .route(web::post().to(create_deployment)) // Create a new deployment/manifest
+                .route(web::delete().to(delete_deployments))) // Delete all deployments/manifests
             .service(web::resource("/file/manifest/{deployment_id}").name("/file/manifest/{deployment_id}")
-                .route(web::get().to(placeholder)) // Get a specific deployment/manifest
-                .route(web::post().to(placeholder)) // Deploy a specific deployment/manifest (send necessary files etc to supervisor/s)
-                .route(web::put().to(placeholder)) // Update a specific deployment/manifest
-                .route(web::delete().to(placeholder))) // Delete a specific deployment/manifest (doesn't exist in original version)
+                .route(web::get().to(get_deployment)) // Get a specific deployment/manifest
+                .route(web::post().to(http_deploy)) // Deploy a specific deployment/manifest (send necessary files etc to supervisor/s)
+                .route(web::put().to(update_deployment)) // Update a specific deployment/manifest
+                .route(web::delete().to(delete_deployment))) // Delete a specific deployment/manifest
 
             // Execution related routes (file: routes/execution)
             // Status of implementations:
-            // ❌ POST /execute/{deployment_id}
+            // ✅ POST /execute/{deployment_id}
             .service(web::resource("/execute/{deployment_id}").name("/execute/{deployment_id}")
-                .route(web::post().to(placeholder))) // Execute a specific deployment/manifest (assumes it has been deployed earlier)
+                .route(web::post().to(execute))) // Execute a specific deployment/manifest (assumes it has been deployed earlier)
 
             // Data source card related routes (file: routes/dataSourceCards)
             // Status of implementations:
@@ -226,9 +237,9 @@ async fn main() -> std::io::Result<()> {
 
             // Deployment certificate related routes (file: routes/deploymentCertificates)
             // Status of implementations:
-            // ❌ GET /deploymentCertificates
+            // ✅ GET /deploymentCertificates
             .service(web::resource("/deploymentCertificates").name("/deploymentCertificates")
-                .route(web::get().to(placeholder))) // Get a list of all deployment certificates (created by the orchestrator, not the user)
+                .route(web::get().to(get_deployment_certificates))) // Get a list of all deployment certificates (created by the orchestrator, not the user)
 
             // Module card related routes (file: routes/moduleCards)
             // Status of implementations:
