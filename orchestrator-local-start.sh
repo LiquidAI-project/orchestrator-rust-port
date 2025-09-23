@@ -91,6 +91,13 @@ fi
 cp .env ./build/.env
 cp entrypoint.sh ./build/entrypoint.sh
 
+# === Step 2.5: Copy initial data ===
+
+echo "📁 Copying initial data..."
+rm -rf ./build/init
+mkdir -p ./build/init
+cp -r ./init/* ./build/init/
+
 # === Step 3: Run backend ===
 
 if [[ "$NO_RUN" == true ]]; then

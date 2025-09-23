@@ -65,6 +65,7 @@ use orchestrator::api::deployment_certificates::get_deployment_certificates;
 use orchestrator::lib::zeroconf;
 use log::{error, debug};
 use actix_web::middleware::NormalizePath;
+use orchestrator::lib::initializer::add_initial_data;
 
 // Placeholder handler
 async fn placeholder(req: HttpRequest) -> impl Responder {
@@ -87,6 +88,9 @@ async fn main() -> std::io::Result<()> {
 
     // Initialize logging with default level = info (unless overridden by env)
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // Initialize the database with data from init folder, if present
+    if let Err(e) = add_initial_data().await { error!("Initialization failed: {:?}", e); }
 
     // Start mdns browser to start polling for available supervisors
     std::thread::spawn(|| {

@@ -16,6 +16,7 @@ pub mod lib {
     pub mod mongodb;
     pub mod zeroconf;
     pub mod utils;
+    pub mod initializer;
 }
 
 pub mod structs {
