@@ -7,18 +7,20 @@ use actix_web::{HttpResponse, Responder, web};
 use log::{info, warn, debug, error};
 use serde_json::{json, Value};
 use sysinfo::{System, Networks};
-use serde::{Serialize, Deserialize};
+use serde::Deserialize;
 use mongodb::{bson::Bson, bson::to_bson, bson::doc, bson};
 use reqwest;
 use chrono;
 use chrono::Utc;
+use std::collections::HashMap;
 use std::fs;
 use tokio::time::{sleep, Duration};
 use futures::stream::TryStreamExt;
 use crate::lib::constants::{
     CONFIG_PATH, 
     DEVICE_HEALTHCHECK_FAILED_THRESHOLD, 
-    DEVICE_HEALTH_CHECK_INTERVAL_S
+    DEVICE_HEALTH_CHECK_INTERVAL_S,
+    COLL_DEVICE
 };
 use crate::lib::mongodb::{
     find_one, 
@@ -27,6 +29,11 @@ use crate::lib::mongodb::{
     get_collection
 };
 use crate::lib::zeroconf;
+use crate::structs::device::{
+    CpuInfo, DeviceCommunication, DeviceDescription, DeviceDoc, Health, HealthReport, MemoryInfo, NetworkInterfaceIpInfo, NetworkInterfaceUsage, OsInfo, PlatformInfo, StatusEnum, StatusLogEntry
+};
+use crate::lib::errors::ApiError;
+use crate::lib::utils::default_device_description;
 
 /// Struct used with manual device registrations
 #[derive(Debug, Deserialize)]
@@ -40,143 +47,71 @@ pub struct ManualDeviceRegistration {
 }
 
 
-/// Represents the device information (supervisor or orchestrator)
-/// discovered via mdns. Below is an example of what this would look like
-/// as json:
+/// GET /health
 /// 
-/// {
-///   name: "device-name",
-///   communication: {
-///     addresses: ["192.168.1.10"],
-///     port: 5000
-///   },
-///   description: {
-///     ...
-///   },
-///   status: "active",
-///   ok_health_check_count: 0,
-///   failed_health_check_count: 0,
-///   status_log: [{ status: "active", time: ... }],
-///   health: {
-///     report: { ... },
-///     time_of_query: ...
-///   }
-/// }
-/// 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceInfo {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none", with = "object_id_as_string")]
-    pub id: Option<bson::oid::ObjectId>,
-    pub name: String,
-    pub communication: Communication,
-    pub description: Option<serde_json::Value>,
-    pub status: String,
-    pub ok_health_check_count: u32,
-    pub failed_health_check_count: u32,
-    pub status_log: Vec<StatusLogEntry>,
-    pub health: Option<HealthReport>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Communication {
-    pub addresses: Vec<String>,
-    pub port: u16,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StatusLogEntry {
-    pub status: String,
-    pub time: chrono::DateTime<chrono::Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HealthReport {
-    pub report: Option<serde_json::Value>,
-    pub time_of_query: chrono::DateTime<chrono::Utc>,
-}
-
-/// Helper for serializing mongodb _id to fit the expected format in DeviceInfo
-mod object_id_as_string {
-    use serde::{self, Deserialize, Deserializer, Serializer};
-    use mongodb::bson::oid::ObjectId;
-
-    pub fn serialize<S>(id: &Option<ObjectId>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match id {
-            Some(oid) => serializer.serialize_str(&oid.to_hex()),
-            None => serializer.serialize_none(),
-        }
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<ObjectId>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        ObjectId::deserialize(deserializer).map(Some)
-    }
-}
-
-
-
 /// Returns a system-level health report for the device.
 ///
 /// This endpoint provides diagnostics about:
 /// - CPU usage
 /// - Memory usage
 /// - Per-interface network traffic (bytes up/down)
-pub async fn thingi_health() -> impl Responder {
-    debug!("✅ Orchestrator health check done");
+pub async fn thingi_health() -> Result<impl Responder, ApiError> {
     let mut sys = System::new_all();
     sys.refresh_all();
     let cpu_usage = sys.global_cpu_usage();
-    let memory_usage = sys.used_memory() / sys.total_memory();
+    let used = sys.used_memory() as f32;
+    let total = sys.total_memory() as f32;
+    let memory_usage = if total > 0.0 { (used / total) * 100.0 } else { 0.0 };
     let networks = Networks::new_with_refreshed_list();
-    let network_usage: Value = networks.iter()
-        .filter_map(|(interface_name, data)| {
-            let down_bytes = data.total_received();
-            let up_bytes = data.total_transmitted();
-            if down_bytes > 0 || up_bytes > 0 {
-                Some((
-                    interface_name.clone(),
-                    json!({
-                        "downBytes": down_bytes,
-                        "upBytes": up_bytes
-                    })
-                ))
-            } else {
-                None
-            }
-        })
-        .collect();
-    HttpResponse::Ok().json(json!({
-        "cpuUsage": cpu_usage,
-        "memoryUsage": memory_usage,
-        "networkUsage": network_usage
-    }))
+    let mut network_usage = std::collections::HashMap::new();
+    for (if_name, data) in networks.iter() {
+        network_usage.insert(
+            if_name.clone(),
+            NetworkInterfaceUsage {
+                down_bytes: data.total_received(),
+                up_bytes: data.total_transmitted(),
+            },
+        );
+    }
+
+    let report = HealthReport {
+        cpu_usage,
+        memory_usage,
+        network_usage,
+    };
+
+    debug!("✅ Orchestrator health check done");
+    Ok(HttpResponse::Ok().json(report))
 }
 
+
+/// GET /.well-known/wasmiot-device-description
+/// 
 /// Returns the device description of the orchestrator (generated dynamically)
-pub async fn wasmiot_device_description() -> impl Responder {
+pub async fn wasmiot_device_description() -> Result<impl Responder, ApiError> {
     debug!("✅ Orchestrator device description served");
-    HttpResponse::Ok().json(get_device_description())
+    Ok(HttpResponse::Ok().json(get_device_description()))
 }
 
+
+/// GET /.well-known/wot-thing-description
+/// 
 /// Returns the Web of Things description of the orchestrator (read from instance/config)
-pub async fn thingi_description() -> impl Responder {
+pub async fn thingi_description() -> Result<impl Responder, ApiError> {
     debug!("✅ Orchestrator Web of Things description request served");
-    HttpResponse::Ok().json(get_wot_td())
+    Ok(HttpResponse::Ok().json(get_wot_td()))
 }
+
 
 /// Returns dynamic platform info. Since this is the orchestrator,
 /// it doesnt provide any supervisor interfaces so that field is left blank.
-pub fn get_device_description() -> Value {
-    let mut description: Value = json!({});
-    description["platform"] = get_device_platform_info();
-    description["supervisorInterfaces"] = json!([]);
-    description
+pub fn get_device_description() -> DeviceDescription {
+    DeviceDescription {
+        platform: get_device_platform_info(),
+        supervisor_interfaces: Vec::new(),
+    }
 }
+
 
 /// Loads the Web of Things (WoT) Thing Description from `device-description.json`.
 /// This is a file expected to exist in the ./instance/config directory.
@@ -188,6 +123,7 @@ pub fn get_wot_td() -> Value {
         .unwrap_or_else(|e| panic!("Error parsing JSON in {}: {}", path.display(), e))
 }
 
+
 /// Gathers live system information using the `sysinfo` crate, including:
 /// - System name, kernel, OS version, hostname
 /// - CPU brand, clock speed, core count
@@ -195,63 +131,61 @@ pub fn get_wot_td() -> Value {
 /// - Network interfaces and IP addresses
 ///
 /// This data is used in the WasmIoT device description function.
-pub fn get_device_platform_info() -> Value {
+pub fn get_device_platform_info() -> PlatformInfo {
     let mut sys = System::new_all();
     sys.refresh_all();
 
     let memory_bytes = sys.total_memory();
+
     let cpu_name = sys.cpus()[0].brand().to_string();
     let clock_speed_hz = sys.cpus()[0].frequency() as u64 * 1_000_000;
+    let mut clock_speed: HashMap<String, u64> = HashMap::new();
+    clock_speed.insert("Hz".to_string(), clock_speed_hz);
     let core_count = sys.cpus().len();
-
-    let system_name = System::name();
-    let system_kernel = System::kernel_version();
-    let system_os = System::os_version();
-    let system_host = System::host_name();
+    
+    let system_name = System::name().unwrap_or_default();
+    let system_kernel = System::kernel_version().unwrap_or_default();
+    let system_os = System::os_version().unwrap_or_default();
+    let system_host = System::host_name().unwrap_or_default();
 
     let networks = Networks::new_with_refreshed_list();
-    let network_data: Value = networks.iter()
-        .map(|(interface_name, data)| {
-            (
-                interface_name.clone(),
-                json!({
-                    "ipInfo": data.ip_networks()
-                        .iter()
-                        .map(|ip| ip.to_string())
-                        .collect::<Vec<String>>()
-                }),
-            )
-        })
-        .collect();
+    let mut network_map: HashMap<String, NetworkInterfaceIpInfo> = HashMap::new();
+    for (if_name, data) in networks.iter() {
+        let ip_info: Vec<String> = data
+            .ip_networks()
+            .iter()
+            .map(|ip| ip.to_string())
+            .collect();
+        network_map.insert(
+            if_name.clone(),
+            NetworkInterfaceIpInfo { ip_info },
+        );
+    }
 
-    json!({
-        "system": {
-            "name": system_name,
-            "kernel": system_kernel,
-            "os": system_os,
-            "hostName": system_host
+    PlatformInfo {
+        cpu: CpuInfo {
+            clock_speed,
+            core_count: core_count as u32,
+            human_readable_name: cpu_name,
         },
-        "memory": {
-            "bytes": memory_bytes
+        memory: MemoryInfo { bytes: memory_bytes },
+        network: network_map,
+        system: OsInfo {
+            host_name: system_host,
+            kernel: system_kernel,
+            name: system_name,
+            os: system_os,
         },
-        "cpu": {
-            "humanReadableName": cpu_name,
-            "clockSpeed": {
-                "Hz": clock_speed_hz
-            },
-            "coreCount": core_count
-        },
-        "network": network_data
-    })
+    }
 }
 
 
 /// Check whether each discovered device is already in the database.
 /// If not, insert it and fetch its description + health asynchronously.
-pub async fn process_discovered_devices(devices: Vec<DeviceInfo>) {
+pub async fn process_discovered_devices(devices: Vec<DeviceDoc>) {
     for device in devices {
         // Check if device already exists
-        let exists = find_one::<DeviceInfo>("device", doc! { "name": &device.name })
+        let exists = find_one::<DeviceDoc>(COLL_DEVICE, doc! { "name": &device.name })
             .await
             .unwrap_or(None)
             .is_some();
@@ -260,7 +194,7 @@ pub async fn process_discovered_devices(devices: Vec<DeviceInfo>) {
         }
 
         // If device did not exist, add it into database
-        if let Err(e) = insert_one("device", &device).await {
+        if let Err(e) = insert_one(COLL_DEVICE, &device).await {
             error!("❌ Saving new device failed for '{}': {:?}", device.name, e);
             continue;
         }
@@ -280,48 +214,64 @@ pub async fn process_discovered_devices(devices: Vec<DeviceInfo>) {
         // For the new device, get the device description and run first health check
         if let Some(desc) = fetch_device_description(&device_clone).await {
             let bson_desc = to_bson(&desc).unwrap_or(Bson::Null);
-            let _ = update_field::<DeviceInfo>("device", doc! { "name": &device_clone.name }, "description", bson_desc).await;
+            let _ = update_field::<DeviceDoc>(COLL_DEVICE, doc! { "name": &device_clone.name }, "description", bson_desc).await;
             info!("📄 '{}' device description fetched", device_clone.name);
         }
 
-        if let Some(health) = fetch_device_health(&device_clone).await {
-            let health_report = HealthReport {
-                report: Some(health),
+        if let Some(report) = fetch_device_health(&device_clone).await {
+            let health = Health {
+                report,
                 time_of_query: chrono::Utc::now(),
             };
-            let bson_health = to_bson(&health_report).unwrap_or(Bson::Null);
-            let _ = update_field::<DeviceInfo>("device", doc! { "name": &device_clone.name }, "health", bson_health).await;
+            let bson_health = to_bson(&health).unwrap_or(Bson::Null);
+            let _ = update_field::<DeviceDoc>(COLL_DEVICE, doc! { "name": &device_clone.name }, "health", bson_health).await;
             info!("📄 '{}' initial healthcheck done ", device_clone.name);
         }
     }
 }
 
 
-/// Attempt to fetch the device description.
-/// Returns parsed JSON on success.
-async fn fetch_device_description(device: &DeviceInfo) -> Option<serde_json::Value> {
+/// Attempt to fetch the device description, and parse it into a DeviceDescription.
+async fn fetch_device_description(device: &DeviceDoc) -> Option<DeviceDescription> {
+    let addr = device.communication.addresses.get(0)?;
     let url = format!(
         "http://{}:{}/.well-known/wasmiot-device-description",
-        device.communication.addresses[0],
+        addr,
         device.communication.port
     );
 
     match reqwest::get(&url).await {
         Ok(res) if res.status().is_success() => {
-            res.json::<serde_json::Value>().await.ok()
+            match res.json::<serde_json::Value>().await {
+                Ok(v) => {
+                    match serde_json::from_value::<DeviceDescription>(v) {
+                        Ok(dd) => Some(dd),
+                        Err(e) => {
+                            warn!("Device '{}' description not in expected shape: {}. Using default.", device.name, e);
+                            Some(default_device_description())
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Device '{}' description JSON error: {}", device.name, e);
+                    None
+                }
+            }
+        }
+        Ok(res) => {
+            warn!("Device '{}' description HTTP status code: {}", device.name, res.status());
+            None
         }
         Err(e) => {
             log::warn!("Failed to fetch device description from {}: {}", device.name, e);
             None
         }
-        _ => None,
     }
 }
 
 
 /// Do a healthcheck on a device.
-/// Returns parsed JSON on success.
-async fn fetch_device_health(device: &DeviceInfo) -> Option<serde_json::Value> {
+async fn fetch_device_health(device: &DeviceDoc) -> Option<HealthReport> {
     let h = reqwest::header::HeaderName::from_bytes(b"X-Forwarded-For").unwrap();
     let mut headers = reqwest::header::HeaderMap::new();
     let public_host = std::env::var("PUBLIC_HOST").unwrap_or_else(|_| {
@@ -329,28 +279,37 @@ async fn fetch_device_health(device: &DeviceInfo) -> Option<serde_json::Value> {
         "localhost".to_string()
     });
     headers.insert(h, public_host.parse().unwrap());
+    let addr = device.communication.addresses.get(0)?;
     let url = format!(
         "http://{}:{}/health",
-        device.communication.addresses[0],
+        addr,
         device.communication.port
     );
 
     let client = reqwest::Client::new();
     match client.get(&url).headers(headers).send().await {
         Ok(res) if res.status().is_success() => {
-            // If showing debug logs, log the custom header
             if let Some(header_value) = res.headers().get("Custom-Orchestrator-Set") {
                 if let Ok(value) = header_value.to_str() {
                     debug!("Custom-Orchestrator-Set header: {}", value);
                 }
             }
-            res.json::<serde_json::Value>().await.ok()
+            match res.json::<serde_json::Value>().await {
+                Ok(v) => serde_json::from_value::<HealthReport>(v).ok(),
+                Err(e) => {
+                    debug!("Invalid health JSON for {}: {}", device.name, e);
+                    None
+                }
+            }
         }
-        Err(e) => {
-            debug!("Failed to do healthcheck for {}: {}", device.name, e);
+        Ok(res) => {
+            debug!("Healthcheck HTTP status code: {}, for device: {}", res.status(), device.name);
             None
         }
-        _ => None,
+        Err(e) => {
+            debug!("Failed to do healthcheck for device {}: {}", device.name, e);
+            None
+        }
     }
 }
 
@@ -371,8 +330,8 @@ pub async fn run_health_check_loop() {
 /// Performs health checks on all known devices.
 /// Will mark devices as inactive if certain number of health checks are failed.
 async fn perform_health_checks() -> mongodb::error::Result<()>{
-    let collection = get_collection::<DeviceInfo>("device").await;
-    let devices: Vec<DeviceInfo> = collection.find(doc! {}).await?
+    let collection = get_collection::<DeviceDoc>(COLL_DEVICE).await;
+    let devices: Vec<DeviceDoc> = collection.find(doc! {}).await?
         .try_collect()
         .await?;
 
@@ -382,23 +341,26 @@ async fn perform_health_checks() -> mongodb::error::Result<()>{
     let mut inactive_count = 0;
 
     for mut device in devices {
-        if device.status == "inactive" {
+
+        if device.status == StatusEnum::Inactive {
             inactive_count += 1;
         }
+
         match fetch_device_health(&device).await {
             Some(report) => {
-                device.health = Some(HealthReport {
-                    report: Some(report),
+                device.health = Some(Health {
+                    report,
                     time_of_query: now,
                 });
                 device.failed_health_check_count = 0;
                 device.ok_health_check_count += 1;
                 ok_count += 1;
 
-                if device.status != "active" && device.ok_health_check_count >= *DEVICE_HEALTHCHECK_FAILED_THRESHOLD {
-                    device.status = "active".to_string();
-                    device.status_log.insert(0, StatusLogEntry {
-                        status: "active".into(),
+                if device.status != StatusEnum::Active && device.ok_health_check_count >= *DEVICE_HEALTHCHECK_FAILED_THRESHOLD {
+                    device.status = StatusEnum::Active;
+                    let log = device.status_log.get_or_insert(Vec::new());
+                    log.insert(0, StatusLogEntry {
+                        status: StatusEnum::Active,
                         time: now,
                     });
                     info!("✅ Device '{}' changed to active", device.name);
@@ -408,20 +370,18 @@ async fn perform_health_checks() -> mongodb::error::Result<()>{
                 device.ok_health_check_count = 0;
                 device.failed_health_check_count += 1;
                 fail_count += 1;
-                device.health = Some(HealthReport {
-                    report: None,
-                    time_of_query: now,
-                });
+                device.health = None;
 
-                if device.status != "inactive" && device.failed_health_check_count >= *DEVICE_HEALTHCHECK_FAILED_THRESHOLD {
-                    device.status = "inactive".to_string();
-                    device.status_log.insert(0, StatusLogEntry {
-                        status: "inactive".into(),
+                if device.status != StatusEnum::Inactive && device.failed_health_check_count >= *DEVICE_HEALTHCHECK_FAILED_THRESHOLD {
+                    device.status = StatusEnum::Inactive;
+                    let log = device.status_log.get_or_insert(Vec::new());
+                    log.insert(0, StatusLogEntry {
+                        status: StatusEnum::Inactive,
                         time: now,
                     });
                     warn!("🔴 Device '{}' changed to inactive", device.name);
 
-                    // TODO: Implement the deployment check logic thingy here later
+                    // TODO: Implement the deployment check logic thing here later
                 }
             }
         }
@@ -429,7 +389,7 @@ async fn perform_health_checks() -> mongodb::error::Result<()>{
         // Write updates back to mongo
         let update = doc! {
             "$set": {
-                "status": &device.status,
+                "status": bson::to_bson(&device.status)?,
                 "failed_health_check_count": device.failed_health_check_count,
                 "ok_health_check_count": device.ok_health_check_count,
                 "status_log": bson::to_bson(&device.status_log)?,
@@ -448,92 +408,113 @@ async fn perform_health_checks() -> mongodb::error::Result<()>{
 }
 
 
+/// POST /file/device/discovery/reset
+/// 
 /// Handler for resetting device discovery
-pub async fn reset_device_discovery() -> impl Responder {
+pub async fn reset_device_discovery() -> Result<impl Responder, ApiError> {
     match zeroconf::run_single_mdns_scan(5).await {
-        Ok(_) => HttpResponse::NoContent().finish(),
+        Ok(_) => Ok(HttpResponse::NoContent().finish()),
         Err(e) => {
             error!("Failed to trigger device rescan: {}", e);
-            HttpResponse::InternalServerError().body("Failed to rescan devices")
+            Err(ApiError::internal_error("Failed to rescan devices"))
         }
     }
 }
 
 
+/// GET /file/device
+/// 
 /// Returns all known devices from the database.
-pub async fn get_all_devices() -> impl Responder {
-    let collection = get_collection::<DeviceInfo>("device").await;
+pub async fn get_all_devices() -> Result<impl Responder, ApiError> {
+    let collection = get_collection::<DeviceDoc>(COLL_DEVICE).await;
 
     match collection.find(doc! {}).await {
         Ok(cursor) => {
-            match cursor.try_collect::<Vec<DeviceInfo>>().await {
-                Ok(devices) => HttpResponse::Ok().json(devices),
+            match cursor.try_collect::<Vec<DeviceDoc>>().await {
+                Ok(devices) => {
+                    let mut v = serde_json::to_value(&devices).map_err(ApiError::internal_error)?;
+                    crate::lib::utils::normalize_object_ids(&mut v);
+                    Ok(HttpResponse::Ok().json(v))
+                },
                 Err(e) => {
                     error!("❌ Failed to collect devices: {:?}", e);
-                    HttpResponse::InternalServerError().body("Failed to collect devices")
+                    Err(ApiError::internal_error("Failed to collect devices"))
                 }
             }
         }
         Err(e) => {
             error!("❌ Failed to query devices: {:?}", e);
-            HttpResponse::InternalServerError().body("Failed to query devices")
+            Err(ApiError::internal_error("Failed to query devices"))
         }
     }
 }
 
+
+/// DELETE /file/device
+/// 
 /// Deletes all known devices from database
-pub async fn delete_all_devices() -> impl Responder {
-    match get_collection::<DeviceInfo>("device").await
+pub async fn delete_all_devices() -> Result<impl Responder, ApiError> {
+    match get_collection::<DeviceDoc>(COLL_DEVICE).await
         .delete_many(doc! {})
         .await
     {
-        Ok(result) => HttpResponse::Ok().json(json!({ "deleted_count": result.deleted_count })),
+        Ok(result) => Ok(HttpResponse::Ok().json(json!({ "deleted_count": result.deleted_count }))),
         Err(e) => {
             error!("❌ Failed to delete all devices: {}", e);
-            HttpResponse::InternalServerError().body("Failed to delete devices")
+            Err(ApiError::internal_error("Failed to delete devices"))
         }
     }
 }
 
 
+/// GET /file/device/{device_id}
+/// 
 /// Returns a single device by name
-pub async fn get_device_by_name(device_name: web::Path<String>) -> impl Responder {
-    match find_one::<DeviceInfo>("device", doc! { "name": device_name.as_str() }).await {
-        Ok(Some(device)) => HttpResponse::Ok().json(device),
-        Ok(None) => HttpResponse::NotFound().body("Device not found"),
+pub async fn get_device_by_name(device_name: web::Path<String>) -> Result<impl Responder, ApiError> {
+    match find_one::<DeviceDoc>(COLL_DEVICE, doc! { "name": device_name.as_str() }).await {
+        Ok(Some(device)) => {
+            let mut v = serde_json::to_value(&device).map_err(ApiError::internal_error)?;
+            crate::lib::utils::normalize_object_ids(&mut v);
+            Ok(HttpResponse::Ok().json(v))
+        },
+        Ok(None) => Err(ApiError::not_found("Device not found")),
         Err(e) => {
             error!("Failed to retrieve device '{}': {:?}", device_name, e);
-            HttpResponse::InternalServerError().body("Failed to retrieve device")
+            Err(ApiError::internal_error("Failed to retrieve device"))
         }
     }
 }
 
 
+/// DELETE /file/device/{device_id}
+/// 
 /// Deletes a specific device from database (by its name)
-pub async fn delete_device_by_name(path: web::Path<String>) -> impl Responder {
+pub async fn delete_device_by_name(path: web::Path<String>) -> Result<impl Responder, ApiError> {
     let name = path.into_inner();
 
-    match get_collection::<DeviceInfo>("device").await
+    match get_collection::<DeviceDoc>(COLL_DEVICE).await
         .delete_one(doc! { "name": name.clone() })
         .await
     {
         Ok(result) => {
             if result.deleted_count == 1 {
-                HttpResponse::NoContent().finish()
+                Ok(HttpResponse::NoContent().finish())
             } else {
-                HttpResponse::NotFound().body(format!("Device '{}' not found", name))
+                Err(ApiError::not_found(format!("Device '{}' not found", name)))
             }
         }
         Err(e) => {
             error!("❌ Failed to delete device '{}': {}", name, e);
-            HttpResponse::InternalServerError().body("Failed to delete device")
+            Err(ApiError::internal_error("Failed to delete device"))
         }
     }
 }
 
 
+/// POST /file/device/discovery/register
+/// 
 /// Adds a device to known devices without depending on mdns mechanisms
-pub async fn register_device(info: web::Json<ManualDeviceRegistration>) -> impl Responder {
+pub async fn register_device(info: web::Json<ManualDeviceRegistration>) -> Result<impl Responder, ApiError> {
     let name = info.name.clone()
         .or_else(|| info.host.clone())
         .unwrap_or_else(|| "unknown-device".to_string());
@@ -544,24 +525,24 @@ pub async fn register_device(info: web::Json<ManualDeviceRegistration>) -> impl 
 
     let port = info.port.unwrap_or(5000);
 
-    let device = DeviceInfo {
+    let device = DeviceDoc {
         id: None,
         name: name.clone(),
-        communication: Communication { addresses: addresses.clone(), port },
-        description: None,
-        status: "active".to_string(),
+        communication: DeviceCommunication { addresses: addresses.clone(), port },
+        description: default_device_description(),
+        status: StatusEnum::Active,
         ok_health_check_count: 0,
         failed_health_check_count: 0,
-        status_log: vec![StatusLogEntry {
-            status: "active".to_string(),
+        status_log: Some(vec![StatusLogEntry {
+            status: StatusEnum::Active,
             time: Utc::now(),
-        }],
+        }]),
         health: None,
     };
 
-    if let Err(e) = insert_one("device", &device).await {
+    if let Err(e) = insert_one(COLL_DEVICE, &device).await {
         error!("❌ Manual registration failed for '{}': {:?}", device.name, e);
-        return HttpResponse::InternalServerError().body("Failed to register device");
+        return Err(ApiError::internal_error("Failed to register device"));
     }
 
     info!("🆕 Manually registered device '{}'", name);
@@ -569,26 +550,27 @@ pub async fn register_device(info: web::Json<ManualDeviceRegistration>) -> impl 
     // Fetch description and health like mDNS logic
     if let Some(desc) = fetch_device_description(&device).await {
         let bson_desc = to_bson(&desc).unwrap_or(Bson::Null);
-        let _ = update_field::<DeviceInfo>("device", doc! { "name": &device.name }, "description", bson_desc).await;
+        let _ = update_field::<DeviceDoc>(COLL_DEVICE, doc! { "name": &device.name }, "description", bson_desc).await;
         info!("📄 '{}' device description fetched", device.name);
     }
 
-    if let Some(health) = fetch_device_health(&device).await {
-        let health_report = HealthReport {
-            report: Some(health),
+    if let Some(report) = fetch_device_health(&device).await {
+        let health = Health {
+            report,
             time_of_query: Utc::now(),
         };
-        let bson_health = to_bson(&health_report).unwrap_or(Bson::Null);
-        let _ = update_field::<DeviceInfo>("device", doc! { "name": &device.name }, "health", bson_health).await;
+        let bson_health = to_bson(&health).unwrap_or(Bson::Null);
+        let _ = update_field::<DeviceDoc>(COLL_DEVICE, doc! { "name": &device.name }, "health", bson_health).await;
         info!("📄 '{}' initial healthcheck done", device.name);
     }
 
-    HttpResponse::NoContent().finish()
+    Ok(HttpResponse::NoContent().finish())
 }
+
 
 /// Registers the orchestrator with the supervisor.
 /// This is used to inform the supervisor about the orchestrator's URL.
-pub async fn register_orchestrator(device: &DeviceInfo) -> Result<(), reqwest::Error> {
+pub async fn register_orchestrator(device: &DeviceDoc) -> Result<(), reqwest::Error> {
     let public_host = std::env::var("PUBLIC_HOST").unwrap_or_else(|_| {
         log::warn!("PUBLIC_HOST environment variable is not set. Using default value 'localhost'");
         "localhost".to_string()
@@ -599,13 +581,21 @@ pub async fn register_orchestrator(device: &DeviceInfo) -> Result<(), reqwest::E
     });
     let orchestrator_url = format!("http://{}:{}", public_host, public_port);
 
+    let addr = match device.communication.addresses.get(0) {
+        Some(a) => a,
+        None => {
+            info!("Device '{}' has no addresses; skipping registration.", device.name);
+            return Ok(());
+        }
+    };
+
     debug!("Registering orchestrator to supervisor with following url {:?}", orchestrator_url);
     let url = format!(
         "http://{}:{}/register",
-        device.communication.addresses[0],
+        addr,
         device.communication.port
     );
-    if device.communication.addresses[0] == public_host && device.communication.port.to_string() == public_port {
+    if addr == &public_host && device.communication.port.to_string() == public_port {
         info!("Skipping orchestrator self-registration.");
         return Ok(());
     }

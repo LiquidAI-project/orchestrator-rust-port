@@ -1,32 +1,28 @@
 use actix_web::{web, HttpResponse, Responder};
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use chrono::{DateTime, Utc};
-use mongodb::bson::{doc, Document};
+use mongodb::bson::doc;
 use crate::lib::mongodb::get_collection;
 use futures::stream::TryStreamExt;
+use log::{info, error};
+use crate::lib::errors::ApiError;
+use crate::lib::constants::COLL_NODE_CARDS;
+use crate::structs::node_cards::NodeCard;
 
-/// NodeCard structure
-#[derive(Debug, Serialize, Deserialize)]
-pub struct NodeCard {
-    pub name: String,
-    pub nodeid: String,
-    pub zone: String,
-    #[serde(rename = "dateReceived", with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
-    pub date_received: DateTime<Utc>,
-}
 
+/// GET /nodeCards
+/// 
 /// Endpoint to create a node card
-pub async fn create_node_card(card: web::Json<Value>) -> impl Responder {
-    log::info!("Received node card data: {:?}", card);
+pub async fn create_node_card(card: web::Json<Value>) -> Result<impl Responder, ApiError> {
+    info!("Received node card data: {:?}", card);
 
     // Extract the first asset from the asset array
     let asset = card.get("asset")
         .and_then(|a| a.as_array())
         .and_then(|arr| arr.get(0));
     if asset.is_none() {
-        log::error!("Invalid metadata: Missing asset data");
-        return HttpResponse::BadRequest().json(json!({ "message": "Invalid metadata: Missing asset data" }));
+        error!("Invalid metadata: Missing asset data");
+        return Err(ApiError::bad_request("Invalid metadata: Missing asset data"));
     }
     let asset = asset.unwrap();
 
@@ -40,6 +36,7 @@ pub async fn create_node_card(card: web::Json<Value>) -> impl Responder {
 
     // Create a new NodeCard instance
     let node_card = NodeCard {
+        id: None,
         name: asset.get("title").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
         nodeid: asset.get("uid").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
         zone,
@@ -47,24 +44,22 @@ pub async fn create_node_card(card: web::Json<Value>) -> impl Responder {
     };
 
     // Save the new card to MongoDB
-    let doc = mongodb::bson::to_document(&node_card).unwrap();
-    let collection = get_collection::<Document>("nodecards").await;
-    match collection.insert_one(doc).await {
-        Ok(_) => HttpResponse::Ok().json(json!({ "message": "Node card received and saved", "nodeCard": node_card })),
+    let collection = get_collection::<NodeCard>(COLL_NODE_CARDS).await;
+    match collection.insert_one(&node_card).await {
+        Ok(_) => Ok(HttpResponse::Ok().json(json!({ "message": "Node card received and saved", "nodeCard": node_card }))),
         Err(e) => {
-            log::error!("Error creating node card: {}", e);
-            HttpResponse::InternalServerError().json(json!({ "message": "Error creating Node card" }))
+            error!("Error creating node card: {}", e);
+            Err(ApiError::internal_error("Error creating Node card"))
         }
     }
 }
 
-/// Endpoint to get node cards
-pub async fn get_node_cards(query: web::Query<std::collections::HashMap<String, String>>) -> impl Responder {
-    let collection = get_collection::<Document>("nodecards").await;
 
-    // Ensure index on date_received
-    let index_model = mongodb::IndexModel::builder().keys(doc! { "date_received": 1 }).build();
-    let _ = collection.create_index(index_model).await;
+/// POST /nodeCards
+/// 
+/// Endpoint to get node cards
+pub async fn get_node_cards(query: web::Query<std::collections::HashMap<String, String>>) -> Result<impl Responder, ApiError> {
+    let collection = get_collection::<NodeCard>(COLL_NODE_CARDS).await;
 
     // Optional time filter
     let mut filter = doc! {};
@@ -76,55 +71,59 @@ pub async fn get_node_cards(query: web::Query<std::collections::HashMap<String, 
     }
 
     // Get and return the results
-    let mut cursor = match collection.find(filter).await {
+    let cursor = match collection.find(filter).await {
         Ok(cursor) => cursor,
         Err(e) => {
-            log::error!("Error querying node cards: {}", e);
-            return HttpResponse::InternalServerError().json(json!({ "message": "Error querying node cards" }));
+            error!("Error querying node cards: {}", e);
+            return Err(ApiError::internal_error("Error querying node cards"));
         }
     };
-    let mut results = Vec::new();
-    while let Some(doc) = cursor.try_next().await.unwrap_or(None) {
-        let card: NodeCard = match mongodb::bson::from_document(doc) {
-            Ok(card) => card,
-            Err(e) => {
-                log::warn!("Failed to deserialize node card: {}", e);
-                continue;
-            }
-        };
-        results.push(card);
-    }
+    let results: Vec<NodeCard> = match cursor.try_collect().await {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Failed to collect node cards: {}", e);
+            return Err(ApiError::db("Failed to collect node cards"));
+        }
+    };
 
-    HttpResponse::Ok().json(results)
+    let mut v = serde_json::to_value(&results).map_err(ApiError::internal_error)?;
+    crate::lib::utils::normalize_object_ids(&mut v);
+    Ok(HttpResponse::Ok().json(v))
 }
 
+
+/// DELETE /nodeCards
+/// 
 /// Endpoint to delete all node cards
-pub async fn delete_all_node_cards() -> impl Responder {
-    let collection = get_collection::<Document>("nodecards").await;
+pub async fn delete_all_node_cards() -> Result<impl Responder, ApiError> {
+    let collection = get_collection::<NodeCard>(COLL_NODE_CARDS).await;
     match collection.delete_many(doc! {}).await {
-        Ok(result) => HttpResponse::Ok().json(json!({ "deleted_count": result.deleted_count })),
+        Ok(result) => Ok(HttpResponse::Ok().json(json!({ "deleted_count": result.deleted_count }))),
         Err(e) => {
-            log::error!("Failed to delete all node cards: {}", e);
-            HttpResponse::InternalServerError().json(json!({ "message": "Failed to delete node cards" }))
+            error!("Failed to delete all node cards: {}", e);
+            Err(ApiError::internal_error("Failed to delete node cards"))
         }
     }
 }
 
+
+/// DELETE /nodeCards/{card_id}
+/// 
 /// Endpoint to delete a specific node card by nodeid
-pub async fn delete_node_card_by_id(path: web::Path<String>) -> impl Responder {
+pub async fn delete_node_card_by_id(path: web::Path<String>) -> Result<impl Responder, ApiError> {
     let nodeid = path.into_inner();
-    let collection = get_collection::<Document>("nodecards").await;
+    let collection = get_collection::<NodeCard>(COLL_NODE_CARDS).await;
     match collection.delete_one(doc! { "nodeid": &nodeid }).await {
         Ok(result) => {
             if result.deleted_count == 1 {
-                HttpResponse::Ok().json(json!({ "message": "Node card deleted", "nodeid": nodeid }))
+                Ok(HttpResponse::Ok().json(json!({ "message": "Node card deleted", "nodeid": nodeid })))
             } else {
-                HttpResponse::NotFound().json(json!({ "message": "Node card not found", "nodeid": nodeid }))
+                Err(ApiError::not_found(format!("Node card not found, nodeid: {}", nodeid)))
             }
         }
         Err(e) => {
-            log::error!("Failed to delete node card with nodeid {}: {}", nodeid, e);
-            HttpResponse::InternalServerError().json(json!({ "message": "Failed to delete node card", "nodeid": nodeid }))
+            error!("Failed to delete node card with nodeid {}: {}", nodeid, e);
+            Err(ApiError::internal_error(format!("Failed to delete node card, nodeid: {}", nodeid)))
         }
     }
 }

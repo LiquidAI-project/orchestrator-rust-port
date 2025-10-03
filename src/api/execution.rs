@@ -18,8 +18,8 @@ use std::path::PathBuf;
 use tokio::io::AsyncWriteExt as _;
 use crate::structs::deployment::{DeploymentDoc, OperationRequest};
 use crate::structs::openapi::OpenApiParameterIn;
-use crate::api::deployment::ApiError;
-
+use crate::lib::errors::ApiError;
+use crate::lib::constants::COLL_DEPLOYMENT;
 
 #[derive(Debug, Clone)]
 pub struct ScheduleFile {
@@ -136,6 +136,8 @@ async fn parse_non_multipart_body(
 }
 
 
+/// POST /execute/{deployment_id}
+/// 
 /// Endpoint to handle executing a deployment. Assumes that a deployment has already been deployed to 
 /// the target devices.
 pub async fn execute(
@@ -144,7 +146,7 @@ pub async fn execute(
     payload: web::Payload,
 ) -> Result<impl Responder, ApiError> {
     let deployment_param = path.into_inner();
-    let coll = get_collection::<DeploymentDoc>("deployment").await;
+    let coll = get_collection::<DeploymentDoc>(COLL_DEPLOYMENT).await;
 
     let filter = match ObjectId::parse_str(&deployment_param) {
         Ok(oid) => doc! { "_id": oid },
@@ -370,6 +372,7 @@ pub async fn schedule(
         .await
         .map_err(|e| format!("request failed: {e}"))
 }
+
 
 /// Get the starting endpoint from a Deployment
 /// 

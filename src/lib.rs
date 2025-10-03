@@ -17,6 +17,7 @@ pub mod lib {
     pub mod zeroconf;
     pub mod utils;
     pub mod initializer;
+    pub mod errors;
 }
 
 pub mod structs {
@@ -29,4 +30,5 @@ pub mod structs {
     pub mod node_cards;
     pub mod openapi;
     pub mod zones;
+    pub mod logs;
 }

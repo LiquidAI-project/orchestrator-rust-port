@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 use lazy_static::lazy_static;
+use const_format::concatcp;
 use std::env;
 
 /// Default port used when running the service.
@@ -15,18 +16,32 @@ pub const DEFAULT_URL_SCHEME: &str = "http";
 /// Default name of the orchestrator
 pub const ORCHESTRATOR_DEFAULT_NAME: &str = "orchestrator";
 
+/// Root directory for where files and modules are stored into
+pub const FILE_ROOT_DIR: &str = "./files";
+
 /// Default directory where modules are stored
-pub const MODULE_DIR: &str = "./files/wasm";
+pub const MODULE_DIR: &str = concatcp!(FILE_ROOT_DIR, "/wasm");
 
 /// Directory where execution input files are stored
-pub const EXECUTION_INPUT_DIR: &str = "./files/exec";
+pub const EXECUTION_INPUT_DIR: &str = concatcp!(FILE_ROOT_DIR, "/exec");
 
 /// Directory where files given for module execution in advance are stored
 /// (Essentially deployment mounts)
-pub const MOUNT_DIR: &str = "./files/mounts";
+pub const MOUNT_DIR: &str = concatcp!(FILE_ROOT_DIR, "/mounts");
 
 /// Name of the initialization function for Wasm modules
 pub const WASMIOT_INIT_FUNCTION_NAME: &str = "_wasmiot_init";
+
+// Names of collections in MongoDB
+pub const COLL_DATASOURCE_CARDS: &str = "datasourcecards";
+pub const COLL_DEPLOYMENT: &str = "deployment";
+pub const COLL_DEPLOYMENT_CERTS: &str = "deploymentcertificates";
+pub const COLL_DEVICE: &str = "device";
+pub const COLL_MODULE: &str = "module";
+pub const COLL_MODULE_CARDS: &str = "modulecards";
+pub const COLL_NODE_CARDS: &str = "nodecards";
+pub const COLL_ZONES: &str = "zones";
+pub const COLL_LOGS: &str = "supervisorLogs";
 
 // TODO: Is this kind of filtering necessary?
 pub const SUPPORTED_FILE_TYPES: &[&str] = &[
