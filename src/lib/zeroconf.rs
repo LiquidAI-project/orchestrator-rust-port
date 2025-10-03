@@ -28,7 +28,14 @@ use crate::lib::constants::{
     DEVICE_SCAN_DURATION_S,
     DEVICE_SCAN_INTERVAL_S
 };
-use crate::api::device::{DeviceInfo, Communication, StatusLogEntry, process_discovered_devices};
+use crate::api::device::process_discovered_devices;
+use crate::structs::device::{
+    DeviceCommunication,
+    DeviceDoc,
+    StatusEnum,
+    StatusLogEntry,
+};
+use crate::lib::utils::default_device_description;
 
 
 /// Represents a service that is advertised on the network.
@@ -84,6 +91,7 @@ impl WebthingZeroconf {
     }
 }
 
+
 /// Payload structure used when sending service registration info to orchestrator.
 #[derive(Debug, Serialize, Clone)]
 pub struct ZeroconfRegistrationData<'a> {
@@ -110,79 +118,75 @@ pub fn get_listening_address() -> (String, u16) {
     (host, port)
 }
 
+
 /// Runs a single scan for new devices, and saves them to database if it finds any.
 pub async fn run_single_mdns_scan(scan_duration_secs: u64) -> zeroconf::Result<()> {
-let service_type = ServiceType::new("webthing", "tcp").unwrap();
-        let mut browser = MdnsBrowser::new(service_type);
+    let service_type = ServiceType::new("webthing", "tcp").unwrap();
+    let mut browser = MdnsBrowser::new(service_type);
 
-        browser.set_service_discovered_callback(Box::new(move |result, _| {
-            if let Ok(service) = result {
-                debug!("Device scan found a device: {:?}", service);
-                tokio::spawn(async move {
-                    let name = service.name().to_string();
-                    let port = *service.port();
-                    let addresses = vec![service.address().clone()];
+    browser.set_service_discovered_callback(Box::new(move |result, _| {
+        if let Ok(service) = result {
+            debug!("Device scan found a device: {:?}", service);
+            tokio::spawn(async move {
+                let name = service.name().to_string();
+                let port = *service.port();
+                let addresses = vec![service.address().clone()];
 
-                    if addresses.is_empty() {
-                        return;
-                    }
+                if addresses.is_empty() {
+                    return;
+                }
 
-                    if name == "orchestrator" && addresses[0] == "127.0.0.1" {
-                        // Special case to prevent orchestrator detecting itself twice.
-                        // TODO: Find a smarter way to prevent this
-                        return;
-                    }
+                if name == "orchestrator" && addresses[0] == "127.0.0.1" {
+                    // Special case to prevent orchestrator detecting itself twice.
+                    // TODO: Find a smarter way to prevent this
+                    return;
+                }
 
-                    let _device = Some(DeviceInfo {
-                        id: None,
-                        name,
-                        communication: Communication { addresses, port },
-                        description: None,
-                        status: "active".to_string(),
-                        ok_health_check_count: 0,
-                        failed_health_check_count: 0,
-                        status_log: vec![StatusLogEntry {
-                            status: "active".to_string(),
-                            time: Utc::now(),
-                        }],
-                        health: None,
-                    });
+                let device = DeviceDoc {
+                    id: None,
+                    name,
+                    communication: DeviceCommunication { addresses, port },
+                    description: default_device_description(),
+                    status: StatusEnum::Active,
+                    ok_health_check_count: 0,
+                    failed_health_check_count: 0,
+                    status_log: Some(vec![StatusLogEntry {
+                        status: StatusEnum::Active,
+                        time: Utc::now(),
+                    }]),
+                    health: None,
+                };
 
-                    let _ = if let Some(device) = _device {
-                        let devices = vec!(device);
-                        let _ = process_discovered_devices(devices).await;
-                    } else {
-                        //
-                    };
-                });
-                
-            } else {
-                error!("❌ Discovery error.");
-            }
-        }));
-
-        let event_loop = match browser.browse_services() {
-            Ok(loop_) => loop_,
-            Err(e) => {
-                error!("❌ Failed to start browsing: {:?}", e);
-                return Err(e);
-            }
-        };
-
-        let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(scan_duration_secs) {
-            if let Err(e) = event_loop.poll(Duration::from_millis(100)) {
-                error!("❌ Poll error: {:?}", e);
-            }
+                let devices = vec![device];
+                let _ = process_discovered_devices(devices).await;
+            });
+            
+        } else {
+            error!("❌ Discovery error.");
         }
-        Ok(())
+    }));
+
+    let event_loop = match browser.browse_services() {
+        Ok(loop_) => loop_,
+        Err(e) => {
+            error!("❌ Failed to start browsing: {:?}", e);
+            return Err(e);
+        }
+    };
+
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(scan_duration_secs) {
+        if let Err(e) = event_loop.poll(Duration::from_millis(100)) {
+            error!("❌ Poll error: {:?}", e);
+        }
+    }
+    Ok(())
 }
 
 
 /// Starts an endless loop for continously scanning for new devices with
 /// predefined intervals
 pub async fn browse_services() -> zeroconf::Result<()> {
-
     loop {
         // Run a single scan and sleep for a predefined time before next scan
         let _ = run_single_mdns_scan(*DEVICE_SCAN_DURATION_S).await;

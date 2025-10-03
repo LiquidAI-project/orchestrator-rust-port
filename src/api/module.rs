@@ -1,7 +1,8 @@
-use crate::lib::constants::{MODULE_DIR, WASMIOT_INIT_FUNCTION_NAME, MOUNT_DIR};
+use crate::lib::constants::{COLL_MODULE, MODULE_DIR, MOUNT_DIR, WASMIOT_INIT_FUNCTION_NAME};
 use crate::lib::mongodb::{insert_one, get_collection};
 use crate::api::module_cards::{delete_all_module_cards, delete_module_card_by_id};
-use actix_web::{web, HttpRequest, HttpResponse, Result};
+use crate::structs::openapi::{OpenApiDocument, OpenApiEncodingObject, OpenApiFormat, OpenApiInfo, OpenApiMediaTypeObject, OpenApiOperation, OpenApiParameterEnum, OpenApiParameterIn, OpenApiParameterObject, OpenApiPathItemObject, OpenApiRequestBodyObject, OpenApiResponseObject, OpenApiSchemaEnum, OpenApiSchemaObject, OpenApiServerObject, OpenApiServerVariableObject, OpenApiTagObject, OpenApiVersion, RequestBodyEnum, ResponseEnum};
+use actix_web::{web, HttpRequest, HttpResponse, Responder, Result};
 use serde_json::{json, Value, Map};
 use mongodb::bson::{self, Bson, doc, oid::ObjectId, Document};
 use actix_multipart::Multipart;
@@ -15,6 +16,10 @@ use std::fs;
 use std::collections::{HashMap, HashSet};
 use actix_files::NamedFile;
 use wasmparser::{ExternalKind, Parser, Payload, TypeRef, ValType as WValType};
+use crate::structs::module::{
+    ModuleDoc, WasmBinaryInfo, WasmExport, WasmRequirement
+};
+use crate::lib::errors::ApiError;
 
 
 // TODO: Module updates (and their notifications if they are already deployed)
@@ -30,6 +35,7 @@ pub struct UploadedFile {
     pub mimetype: String,
 }
 
+
 /// Contains the values of the headers (fields), and the actual value in the multipart
 /// field (value).
 #[derive(Debug, Serialize, Deserialize)]
@@ -40,6 +46,7 @@ pub struct MultipartField {
     pub value: String
 }
 
+
 /// Structure to hold all fields, values and files received in a multipart request.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MultipartSummary {
@@ -47,66 +54,6 @@ pub struct MultipartSummary {
     pub files: Vec<UploadedFile>,
 }
 
-/// The metadata saved to database related to given wasm module.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WasmMetadata {
-    #[serde(rename = "originalFilename")]
-    pub original_filename: String,
-    #[serde(rename = "fileName")]
-    pub filename: String,
-    pub path: String
-}
-
-/// Represents a single export from a WebAssembly module.
-/// These are functions that can be called from outside the module.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WasmExport {
-    pub name: String,
-    #[serde(rename = "parameterCount")]
-    pub parameter_count: usize,
-    pub params: Vec<String>, // List of function parameter types as strings
-    pub results: Vec<String>, // List of function types as strings
-}
-
-/// Represents a requirement for a WebAssembly module. Usually a function, its module, and its name.
-/// That function is expected to be provided by the supervisor to the webassembly module.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WasmRequirement {
-    pub module: String,
-    pub name: String,
-    pub kind: String,
-    pub params: Vec<String>, // List of function parameter types as strings
-    pub results: Vec<String>, // List of function result types as strings
-}
-
-/// Empty placeholder for datafiles
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DataFiles { }
-
-/// Empty placeholder for the openapi description
-#[derive(Debug, Serialize, Deserialize)]
-pub struct OpenApiDescription { }
-
-/// Empty placeholder for list of mounts
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Mounts { }
-
-/// Structure that represents the document related to the webassembly module.
-/// The serialized version of this is saved to mongodb.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WasmDoc {
-    pub name: String,
-    pub exports: Vec<WasmExport>,
-    pub requirements: Vec<WasmRequirement>,
-    pub wasm: WasmMetadata,
-    #[serde(rename = "dataFiles")]
-    pub data_files: DataFiles,
-    #[serde(rename = "description")]
-    pub open_api_description: OpenApiDescription,
-    pub mounts: Mounts,
-    #[serde(rename = "isCoreModule", default)]  
-    pub is_core_module: bool, // Default to false
-}
 
 /// Stores the name and type of a single parameter
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +65,7 @@ pub struct FunctionParam {
     pub ty: String,
 }
 
+
 /// Stores a single mount for a function.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MountSpec {
@@ -127,6 +75,7 @@ pub struct MountSpec {
     /// The stage of this mount. Can be output, deployment or execution
     pub stage: String, // TODO: Limit what this can be.
 }
+
 
 /// Stores the specifications for a single function.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,16 +92,17 @@ pub struct FunctionSpec {
     pub output_type: String,
 }
 
+
 /// This function is meant to handle multipart requests that might or might not
 /// contain multiple files and fields. It processes the request body, extracts the
 /// separate fields into json, and saves files to disk while adding saved file information
 /// on the returned json as well.
-async fn handle_multipart_request(mut payload: Multipart) -> Result<MultipartSummary, actix_web::Error> {
+async fn handle_multipart_request(mut payload: Multipart) -> Result<MultipartSummary, ApiError> {
 
     // Ensure the module directory exists
     if let Err(e) = std::fs::create_dir_all(MODULE_DIR) {
         error!("❌ Failed to create module directory: {}", e);
-        return Err(actix_web::error::ErrorInternalServerError("Failed to create module directory"));
+        return Err(ApiError::internal_error("Failed to create module directory"));
     }
 
     // Iterate over each field in the multipart payload
@@ -222,24 +172,32 @@ async fn handle_multipart_request(mut payload: Multipart) -> Result<MultipartSum
         // Ensure directory exists (create it if missing)
         if let Err(e) = std::fs::create_dir_all(base_dir) {
             error!("❌ Failed to ensure upload directory '{}': {}", base_dir, e);
-            return Err(actix_web::error::ErrorInternalServerError("Failed to prepare upload directory"));
+            return Err(ApiError::internal_error("Failed to prepare upload directory"));
         }
 
         let mut f = match std::fs::File::create(&filepath) {
             Ok(file) => file,
             Err(e) => {
                 error!("❌ Failed to create file: {e}");
-                return Err(actix_web::error::ErrorInternalServerError("Failed to create file to disk."));
+                return Err(ApiError::internal_error("Failed to create file to disk."));
             }
         };
 
         while let Some(Ok(chunk)) = field.next().await {
             if let Err(e) = f.write_all(&chunk) {
                 error!("❌ Failed to write file: {e}");
-                return Err(actix_web::error::ErrorInternalServerError("Failed to write file to disk."));
+                return Err(ApiError::internal_error("Failed to write file to disk."));
             }
         }
-        let meta = std::fs::metadata(&filepath)?;
+
+        let meta = match std::fs::metadata(&filepath) {
+            Ok(m) => m,
+            Err(e) => {
+                error!("❌ Failed to get metadata for file '{}': {}", filepath, e);
+                return Err(ApiError::internal_error("Failed to get file metadata"));
+            }
+        };
+
         debug!("📦 Saved file to disk: {}", filepath);
         let uploaded = UploadedFile {
             fieldname: name,         
@@ -268,32 +226,34 @@ fn module_filter(x: &str) -> Document {
 }
 
 
+/// POST /file/module
+/// 
 /// Endpoint for creating a new module. Extracts the description and wasm module
 /// from the request body, and returns the id of the newly created module entry.
-pub async fn create_module(payload: Multipart) -> HttpResponse {
+pub async fn create_module(payload: Multipart) -> Result<impl Responder, ApiError> {
     // Ensure the target directory exists
     if let Err(e) = std::fs::create_dir_all(MODULE_DIR) {
         error!("❌ Failed to create module directory: {e}");
-        return HttpResponse::InternalServerError().body("Failed to create module directory");
+        return Err(ApiError::internal_error("Failed to create module directory"));
     }
 
     let summary = match handle_multipart_request(payload).await {
         Ok(s) => s,
         Err(e) => {
             error!("❌ Failed to process multipart request: {}", e);
-            return HttpResponse::InternalServerError().body("Failed to process multipart request");
+            return Err(ApiError::internal_error("Failed to process multipart request"));
         }
     };
 
     // Get the first file that is a wasm module
     let wasm_upload = match summary.files.iter().find(|f| f.mimetype == "application/wasm") {
         Some(file) => file,
-        None => return HttpResponse::BadRequest().body("No .wasm file provided"),
+        None => return Err(ApiError::bad_request("No .wasm file provided")),
     };
     // Get the user defined wasm module name
     let module_name = match summary.fields.iter().find(|f| f.fieldname == "name") {
         Some(field) => field.value.clone(),
-        None => return HttpResponse::BadRequest().body("No module name provided"),
+        None => return Err(ApiError::bad_request("No module name provided")),
     };
     // Get the name (filename) of the uploaded wasm module
     let wasm_filename = wasm_upload.originalname.clone();
@@ -307,43 +267,44 @@ pub async fn create_module(payload: Multipart) -> HttpResponse {
         Ok(x) => x,
         Err(e) => {
             error!("❌ Failed to parse wasm at '{}': {}", wasm_file_path, e);
-            return HttpResponse::BadRequest().body("Failed to parse wasm module");
+            return Err(ApiError::bad_request("Failed to parse wasm module"));
         }
     };
 
 
-    let wasm_metadata = WasmMetadata {
-            original_filename: wasm_filename,
-            filename: wasm_upload.filename.clone(),
-            path: wasm_file_path
-        };    
+    let wasm_metadata = WasmBinaryInfo {
+        original_filename: wasm_filename,
+        file_name: wasm_upload.filename.clone(),
+        path: wasm_file_path
+    };    
 
     // Other values are updated after user uploads the module description, for now they are empty
-    let wasm_doc = WasmDoc {
+    let wasm_doc = ModuleDoc {
+        id: None,
         name: name,
         exports,
         requirements,
         wasm: wasm_metadata,
-        data_files: DataFiles {},
-        open_api_description: OpenApiDescription {},
-        mounts: Mounts {},
+        data_files: None,
+        description: None,
+        mounts: None,
         is_core_module: false,
     };
 
     let wasm_document = bson::to_document(&wasm_doc).unwrap();
     debug!("📄 Final module document before saving:\n{:?}", wasm_document);
     // Save the document to the database
-    let inserted_id = insert_one("module", &wasm_document).await;
+    let inserted_id = insert_one(COLL_MODULE, &wasm_document).await;
     let module_id = match inserted_id {
         Ok(Bson::ObjectId(id)) => id,
         _ => {
             error!("❌ Failed to convert the id returned by mongodb into an objectId: {:?}", inserted_id);
-            return HttpResponse::InternalServerError().body("Database failure, check server logs");
+            return Err(ApiError::db("Database failure, check server logs"));
         }
     };
     debug!("✅ Module document saved to database, _id={:?}", module_id);    
 
-    HttpResponse::Created().json(json!({ "id": module_id.to_hex() }))
+    Ok(HttpResponse::Created().json(json!({ "id": module_id.to_hex() })))
 
 }
 
@@ -502,15 +463,11 @@ fn wasmparser_valtype(t: &WValType) -> String {
 
 
 /// Helper function for collecting paths to all mounted files related to a single module
-fn collect_datafile_paths(doc: &mongodb::bson::Document) -> Vec<String> {
+fn collect_datafile_paths(doc: &ModuleDoc) -> Vec<String> {
     let mut out = Vec::new();
-    if let Ok(df) = doc.get_document("dataFiles") {
-        for (_k, v) in df.iter() {
-            if let Some(obj) = v.as_document() {
-                if let Ok(p) = obj.get_str("path") {
-                    out.push(p.to_string());
-                }
-            }
+    if let Some(data_files) = &doc.data_files {
+        for (_k, v) in data_files.iter() {
+            out.push(v.path.clone());
         }
     }
     out
@@ -525,7 +482,7 @@ fn try_delete_file(path: &str, files_deleted: &mut usize, file_errors: &mut Vec<
             *files_deleted += 1;
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            debug!("File already deleted before: {}", path);
+            debug!("File already deleted or doesn't exist: {}", path);
         }
         Err(e) => {
             warn!("Failed to delete file '{}': {}", path, e);
@@ -583,18 +540,18 @@ fn delete_all_files_in_dir(dir: &str) -> (usize, Vec<String>) {
 }
 
 
+/// DELETE /file/module
+/// 
 /// Endpoint for deleting all modules. Also removes related modulecards, wasm modules and mounted files.
-pub async fn delete_all_modules() -> HttpResponse {
+pub async fn delete_all_modules() -> Result<impl Responder, ApiError> {
 
     // Delete all module docs from database
-    let coll = get_collection::<Document>("module").await;
+    let coll = get_collection::<ModuleDoc>(COLL_MODULE).await;
     let deleted = match coll.delete_many(doc! {}).await {
         Ok(res) => res.deleted_count,
         Err(e) => {
             error!("Failed to delete module documents: {e}");
-            return HttpResponse::InternalServerError().json(json!({
-                "message":"Failed to delete module documents"
-            }));
+            return Err(ApiError::internal_error("Failed to delete module documents"));
         }
     };
 
@@ -608,138 +565,135 @@ pub async fn delete_all_modules() -> HttpResponse {
     // Delete all module cards
     let _ = delete_all_module_cards().await;
 
-    HttpResponse::Ok().json(json!({
+    Ok(HttpResponse::Ok().json(json!({
         "message": "Deleted all modules",
         "docs_deleted": deleted,
         "files_deleted": wasm_deleted + mounts_deleted,
         "file_errors": wasm_errs
-    }))
+    })))
 }
 
 
+/// DELETE /file/module/{module_id}
+/// 
 /// Deletes a single module by its id or name. Also removes all files related to it.
-pub async fn delete_module_by_id(path: web::Path<String>) -> HttpResponse {
+pub async fn delete_module_by_id(path: web::Path<String>) -> Result<impl Responder, ApiError> {
     let key = path.into_inner();
-    let coll = get_collection::<Document>("module").await;
+    let coll = get_collection::<ModuleDoc>(COLL_MODULE).await;
 
     // Get the module document
     let filter = module_filter(&key);
     let doc_opt = match coll.find_one(filter.clone()).await {
         Ok(d) => d,
         Err(e) => {
-            error!("Lookup failed for '{}': {}", key, e);
-            return HttpResponse::InternalServerError().json(json!({"message":"Lookup failed"}));
+            error!("Failed to find module document to delete '{}': {}", key, e);
+            return Err(ApiError::db(format!("Failed to search for module: {:?}", e)));
         }
     };
 
     // Return error if no module matched the query (id or name)
     let Some(doc) = doc_opt else {
-        return HttpResponse::NotFound().json(json!({"message":"Module not found","query": key}));
+        return Err(ApiError::not_found(format!("Module not found for query: {}", key)));
     };
 
-    // Get the modules _id
-    let module_oid_hex = match doc.get_object_id("_id") {
-        Ok(oid) => oid.to_hex(),
-        Err(_) => {
-            warn!("Module document missing valid _id, won't be able to delete module cards related to it.");
-            String::new()
+    // Get the modules id
+    let module_oid_hex = match doc.id {
+        Some(oid) => oid.to_hex(),
+        None => {
+            error!("Module document missing valid id! Document: {:?}", doc);
+            return Err(ApiError::internal_error("Module document missing valid id!"));
         }
     };
 
-    // Delete related module card if _id was found
+    // Delete related module card if id was found
     if !module_oid_hex.is_empty() {
         let _ = delete_module_card_by_id(web::Path::<String>::from(module_oid_hex.clone())).await;
     }
 
     // Delete all files related to the module
-    let wasm_path = doc.get_document("wasm")
-        .ok()
-        .and_then(|w| w.get_str("path").ok())
-        .map(|s| s.to_string());
-
+    let wasm_path = doc.wasm.path.clone();
     let mut files_deleted = 0usize;
     let mut file_errors: Vec<String> = Vec::new();
-    if let Some(path) = wasm_path {
-        try_delete_file(&path, &mut files_deleted, &mut file_errors);
-    }
+    try_delete_file(&wasm_path, &mut files_deleted, &mut file_errors);
     for p in collect_datafile_paths(&doc) {
         try_delete_file(&p, &mut files_deleted, &mut file_errors);
     }
 
     // Delete the module doc
     match coll.delete_one(filter).await {
-        Ok(res) if res.deleted_count == 1 => HttpResponse::Ok().json(json!({
+        Ok(res) if res.deleted_count == 1 => Ok(HttpResponse::Ok().json(json!({
             "message":"Module deleted",
             "query": key,
             "files_deleted": files_deleted,
             "file_errors": file_errors
-        })),
-        Ok(_) => HttpResponse::NotFound().json(json!({"message":"Module not found during delete","query": key})),
+        }))),
+        Ok(_) => Err(ApiError::not_found(format!("Module not found during delete, query: {}", key))),
         Err(e) => {
             error!("Failed to delete module doc '{}': {}", key, e);
-            HttpResponse::InternalServerError().json(json!({
-                "message":"Failed to delete module document",
-                "query": key,
-                "files_deleted": files_deleted,
-                "file_errors": file_errors
-            }))
+            Err(ApiError::internal_error(format!("Failed to delete module document, query: {}", key)))
         }
     }
 }
 
 
+/// GET /file/module
+/// 
 /// Endpoint for getting all module docs from database
-pub async fn get_all_modules() -> HttpResponse {
-    let coll = get_collection::<Document>("module").await;
+pub async fn get_all_modules() -> Result<impl Responder, ApiError> {
+    let coll = get_collection::<ModuleDoc>(COLL_MODULE).await;
     let mut cursor = match coll.find(doc! {}).await {
         Ok(c) => c,
         Err(e) => {
-            log::error!("Error querying modules: {}", e);
-            return HttpResponse::InternalServerError().json(json!({
-                "message": "Error querying modules"
-            }));
+            error!("Error querying modules: {}", e);
+            return Err(ApiError::db(format!("Error querying modules: {}", e)));
         }
     };
-    let mut out: Vec<Document> = Vec::new();
-    while let Some(mut doc) = cursor.try_next().await.unwrap_or(None) {
-        if let Some(oid) = doc.get_object_id("_id").ok() {
-            doc.insert("_id", Bson::String(oid.to_hex()));
-        }
+    let mut out: Vec<ModuleDoc> = Vec::new();
+    while let Some(doc) = cursor.try_next().await.map_err(ApiError::db)? {
         out.push(doc);
     }
-    HttpResponse::Ok().json(out)
+    let mut v = serde_json::to_value(&out).map_err(ApiError::internal_error)?;
+    crate::lib::utils::normalize_object_ids(&mut v);
+    Ok(HttpResponse::Ok().json(v))
 }
 
 
+/// GET /file/module/{module_id}
+/// 
 /// Endpoint for getting one module doc by its name/id from database.
-pub async fn get_module_by_id(path: web::Path<String>) -> HttpResponse {
+pub async fn get_module_by_id(path: web::Path<String>) -> Result<impl Responder, ApiError> {
     let id_str = path.into_inner();
-    let coll = get_collection::<Document>("module").await;
+    let coll = get_collection::<ModuleDoc>(COLL_MODULE).await;
     let filter = module_filter(&id_str);
     match coll.find_one(filter).await {
-        Ok(Some(mut doc)) => {
-            if let Ok(oid_ref) = doc.get_object_id("_id") {
-                doc.insert("_id", Bson::String(oid_ref.to_hex()));
-            }
-            HttpResponse::Ok().json(vec![doc])
+        Ok(Some(doc)) => {
+            let mut v = serde_json::to_value(&doc).map_err(ApiError::internal_error)?;
+            crate::lib::utils::normalize_object_ids(&mut v);
+            Ok(HttpResponse::Ok().json(vec![v]))
         }
-        Ok(None) => HttpResponse::Ok().json(Vec::<Document>::new()), // []
-        Err(e) => HttpResponse::InternalServerError().json(json!({
+        Ok(None) => Ok(HttpResponse::Ok().json(Vec::<Document>::new())), // []
+        Err(e) => Ok(HttpResponse::InternalServerError().json(json!({
             "message": "Error querying module",
             "error": e.to_string()
-        })),
+        }))),
     }
 }
 
 
+/// POST /file/module/{module_id}/upload
+/// 
 /// Endpoint that takes the module description as an html form (multipart request), and
 /// creates an openapi documentation for the related module from that. 
+/// Note that this expects the form to have a very specific format.
 pub async fn describe_module(
     path: web::Path<String>,
     payload: Multipart,
-) -> HttpResponse {
+) -> Result<impl Responder, ApiError> {
 
-    // TODO: Find a better way to parse the description fields. The current one sucks to update.
+    // TODO: Switch to using json instead of multipart for sending descriptions. That way you can have some clear
+    // definition of what the description should contain (easy to update etc).
+
+    // -------------- Start of multipart/description parsing -----------------
 
     // Get the multipart summary first. This is helpful because handle_multipart_request
     // handles correctly saving files that came with the request.
@@ -747,7 +701,7 @@ pub async fn describe_module(
         Ok(s) => s,
         Err(e) => {
             error!("❌ multipart handling failed: {e}");
-            return HttpResponse::InternalServerError().body("Failed to process multipart");
+            return Err(ApiError::internal_error("Failed to process multipart"));
         }
     };
 
@@ -755,16 +709,16 @@ pub async fn describe_module(
     // that were sent with the request are related to. Fail miserably if the module is not found.
     let key = path.into_inner();
     let filter = module_filter(&key);
-    let coll = get_collection::<Document>("module").await;
+    let coll = get_collection::<ModuleDoc>(COLL_MODULE).await;
     let module_doc = match coll.find_one(filter.clone()).await {
         Ok(Some(d)) => d,
-        Ok(None) => return HttpResponse::NotFound().body("Module not found"),
+        Ok(None) => return Err(ApiError::not_found("Module not found")),
         Err(e) => {
             error!("Database error when searching for a module related to module description: {e}");
-            return HttpResponse::InternalServerError().body("Database error");
+            return Err(ApiError::internal_error("Database error"));
         }
     };
-    let module_name = module_doc.get_str("name").unwrap_or("unknown");
+    let module_name = module_doc.name.clone();
 
     // Parse the description field by field
     let description_json = {
@@ -852,9 +806,7 @@ pub async fn describe_module(
 
         // If root object was empty, something was wrong with the request.
         if root.is_empty() {
-            return HttpResponse::BadRequest().json(json!({
-                "message": "No description was provided, or description was malformed."
-            }));
+            return Err(ApiError::bad_request("No description was provided, or description was malformed."));
         }
         serde_json::to_value(root).unwrap()
     };
@@ -949,17 +901,16 @@ pub async fn describe_module(
                 }
             }
             if !actually_missing.is_empty() {
-                return HttpResponse::BadRequest().json(json!({
-                    "message": format!("Functions missing mounts: {}", serde_json::to_string(&actually_missing).unwrap_or_default())
-                }));
+                return Err(ApiError::bad_request(format!("Functions missing mounts: {}", serde_json::to_string(&actually_missing).unwrap_or_default())));
             }
         } else {
-            return HttpResponse::BadRequest().json(json!({
-                "message": format!("Functions missing mounts: {}", serde_json::to_string(&missing).unwrap_or_default())
-            }));
+            return Err(ApiError::bad_request(format!("Functions missing mounts: {}", serde_json::to_string(&missing).unwrap_or_default())));
         }
     }
 
+    // -------------- End of multipart/description parsing -----------------
+
+    // TODO: When you switch away from multipart requests, change this part too.
     // Generate a listing of all datafiles related to this module
     let mut update_doc = Document::new();
     for f in summary.files.iter().filter(|f| f.mimetype != "application/wasm") {
@@ -977,7 +928,7 @@ pub async fn describe_module(
     update_doc.insert("mounts", Bson::Document(mounts_doc));
 
     // Generate the openapi description in correct format to be stored to database
-    let openapi_json = module_endpoint_descriptions(module_name, &functions);
+    let openapi_json = module_endpoint_descriptions(&module_name, &functions);
     let description_doc: Document = bson::to_document(&openapi_json).unwrap_or_else(|_| Document::new());
     update_doc.insert("description", Bson::Document(description_doc));
 
@@ -985,9 +936,9 @@ pub async fn describe_module(
     let update = doc! { "$set": update_doc };
     if let Err(e) = coll.update_many(filter, update).await {
         error!("Failed to update module with mounts/description: {e}");
-        return HttpResponse::InternalServerError().body("update failed");
+        return Err(ApiError::db("update failed"));
     }
-    HttpResponse::Ok().json(json!({ "description": openapi_json }))
+    Ok(HttpResponse::Ok().json(json!({ "description": openapi_json })))
 }
 
 
@@ -995,140 +946,230 @@ pub async fn describe_module(
 pub fn module_endpoint_descriptions(
     module_name: &str,
     functions: &HashMap<String, FunctionSpec>,
-) -> Value {
+) -> OpenApiDocument {
 
-    // Create a map of paths, where each path has their own specifications
-    // constructed from the 'functions' hashmap into expected openapi format.
-    // This is done by iterating through each function, since each function will have 
-    // their own path.
-    let mut paths = Map::new();
+    let deployment_param = OpenApiParameterEnum::OpenApiParameterObject(OpenApiParameterObject {
+        name: "deployment".into(),
+        r#in: OpenApiParameterIn::Path,
+        description: Some("Deployment ID".into()),
+        required: true,
+        deprecated: None,
+        allow_empty_value: None,
+        style: None,
+        explode: None,
+        allow_reserved: None,
+        schema: Some(OpenApiSchemaEnum::OpenApiSchemaObject(OpenApiSchemaObject {
+            r#type: Some("string".into()),
+            properties: None,
+            format: None
+        })),
+        content: None,
+    });
+
+    let mut paths: HashMap<String, OpenApiPathItemObject> = HashMap::new();
+
     for (func_name, func) in functions {
-        // Parameters element of a path object (same for every path)
-        let params_element = vec![json!({
-            "name": "deployment",
-            "in": "path",
-            "description": "Deployment ID",
-            "required": true,
-            "schema": { "type": "string" }
-        })];
-
-        // Function query parameters for the current function. Each parameter has their own entry.
-        // These will be listed under the http method related key 
-        // (for example {'path':'get':'parameters':[func_params]} )
-        let func_params: Vec<Value> = func.parameters.iter().map(|p| {
-            json!({
-                "name": p.name,
-                "in": "query",
-                "description": "Auto-generated description",
-                "required": true,
-                "schema": { "type": p.ty }
+        let func_params: Vec<OpenApiParameterEnum> = func.parameters.iter().map(|p| {
+            OpenApiParameterEnum::OpenApiParameterObject(OpenApiParameterObject {
+                name: p.name.clone(),
+                r#in: OpenApiParameterIn::Query,
+                description: Some("Auto-generated description".into()),
+                required: true,
+                deprecated: None,
+                allow_empty_value: None,
+                style: None,
+                explode: None,
+                allow_reserved: None,
+                schema: Some(OpenApiSchemaEnum::OpenApiSchemaObject(OpenApiSchemaObject {
+                    r#type: Some(p.ty.clone()),
+                    properties: None,
+                    format: None
+                })),
+                content: None,
             })
         }).collect();
 
-        // 'responses' element under the path item. More specifically, this is also listed under
-        // the http method related key under the path, for example
-        // {'path':'get':'responses':{'200':{success_content}}}
-        let success_content = if is_primitive(&func.output_type) {
-            json!({
-                "application/json": {
-                    "schema": { "type": func.output_type }
+        let mut content: HashMap<String, OpenApiMediaTypeObject> = HashMap::new();
+        if is_primitive(&func.output_type) {
+            content.insert(
+                "application/json".into(),
+                OpenApiMediaTypeObject {
+                    schema: Some(OpenApiSchemaEnum::OpenApiSchemaObject(OpenApiSchemaObject {
+                        r#type: Some(func.output_type.clone()),
+                        properties: None,
+                        format: None
+                    })),
+                    encoding: None
                 }
-            })
+            );
         } else {
-            json!({
-                func.output_type.clone(): {
-                    "schema": { "type": "string", "format": "binary" }
+            content.insert(
+                func.output_type.clone(),
+                OpenApiMediaTypeObject {
+                    schema: Some(OpenApiSchemaEnum::OpenApiSchemaObject(OpenApiSchemaObject {
+                        r#type: Some("string".into()),
+                        properties: None,
+                        format: Some(OpenApiFormat::Binary)
+                    })),
+                    encoding: None
                 }
+            );
+        }
+
+        let mut responses: HashMap<String, ResponseEnum> = HashMap::new();
+        responses.insert(
+            "200".into(),
+            ResponseEnum::OpenApiResponseObject(OpenApiResponseObject {
+                description: "Auto-generated description of response".into(),
+                headers: None,
+                content: Some(content),
+                links: None
             })
-        };
+        );
 
-        // The http method that this path should be called with. Stored as for example {'path':'get':{}}
-        // Contains the elements 'tags', 'summary', 'parameters' and 'responses', some of which were constructed
-        // earlier.
-        let method_key = func.method.to_lowercase();
-        let mut http_method_key = Map::new();
-        http_method_key.insert("tags".into(), json!([]));
-        http_method_key.insert("summary".into(), json!("Auto-generated description of function call method"));
-        http_method_key.insert("parameters".into(), Value::Array(func_params));
-        http_method_key.insert("responses".into(), json!({
-            "200": {
-                "description": "Auto-generated description of response",
-                "content": success_content
-            }
-        }));
-
-        // Optional element containing information on the input mounts of a function (that is a mount
-        // other than an output mount). Only added if there are other mounts than output mounts
         let input_mounts: Vec<(&String, &MountSpec)> = func
             .mounts
             .iter()
-            .filter(|(_name, m)| m.stage != "output")
+            .filter(|(_name, m)| !m.stage.eq_ignore_ascii_case("output"))
             .collect();
-        if !input_mounts.is_empty() {
 
-            // Set the properties for each mount. They all are set to have type:string and format:binary.
-            let mut properties = Map::new();
-            for (name, _m) in &input_mounts {
+        let request_body = if !input_mounts.is_empty() {
+            let mut properties: HashMap<String, OpenApiSchemaEnum> = HashMap::new();
+            let mut encoding: HashMap<String, OpenApiEncodingObject> = HashMap::new();
+
+            for (name, m) in &input_mounts {
                 properties.insert(
                     (*name).clone(),
-                    json!({ "type": "string", "format": "binary" }),
+                    OpenApiSchemaEnum::OpenApiSchemaObject(OpenApiSchemaObject {
+                        r#type: Some("string".into()),
+                        properties: None,
+                        format: Some(OpenApiFormat::Binary),
+                    })
+                );
+                encoding.insert(
+                    (*name).clone(),
+                    OpenApiEncodingObject {
+                        content_type: Some(m.media_type.clone()),
+                        headers: None,
+                        style: None,
+                        explode: None,
+                        allow_reserved: None
+                    }
                 );
             }
-            // Set the encoding/content-type for each mount. Usually this will end up being 
-            // application/octet-stream
-            let mut encoding = Map::new();
-            for (name, m) in &input_mounts {
-                encoding.insert((*name).clone(), json!({ "contentType": m.media_type }));
-            }
 
-            // Build the final request_body object, and save it under the current functions http method key
-            let request_body = json!({
-                "required": true,
-                "content": {
-                    "multipart/form-data": {
-                        "schema": { "type": "object", "properties": properties },
-                        "encoding": encoding
-                    }
+            let mut mt_map: HashMap<String, OpenApiMediaTypeObject> = HashMap::new();
+            mt_map.insert(
+                "multipart/form-data".into(),
+                OpenApiMediaTypeObject {
+                    schema: Some(OpenApiSchemaEnum::OpenApiSchemaObject(OpenApiSchemaObject {
+                        r#type: Some("object".into()),
+                        properties: Some(properties),
+                        format: None
+                    })),
+                    encoding: Some(encoding)
                 }
-            });
-            http_method_key.insert("requestBody".into(), request_body);
+            );
+
+            Some(RequestBodyEnum::OpenApiRequestBodyObject(OpenApiRequestBodyObject {
+                description: None,
+                content: mt_map,
+                required: Some(true)
+            }))
+        } else {
+            None
+        };
+
+        let operation = OpenApiOperation {
+            tags: vec![],
+            summary: Some("Auto-generated description of function call method".into()),
+            description: None,
+            external_docs: None,
+            operation_id: None,
+            parameters: if func_params.is_empty() { None } else { Some(func_params) },
+            request_body,
+            responses,
+            callbacks: None,
+            deprecated: None,
+            security: None,
+            servers: None
+        };
+
+        let mut path_item = OpenApiPathItemObject {
+            r#ref: None,
+            summary: Some("Auto-generated description of function".into()),
+            description: None,
+            get: None, put: None, post: None, delete: None, options: None, head: None, patch: None, trace: None,
+            servers: None,
+            parameters: Some(vec![deployment_param.clone()])
+        };
+
+        match func.method.as_str() {
+            "get"    => path_item.get    = Some(operation),
+            "post"   => path_item.post   = Some(operation),
+            "put"    => path_item.put    = Some(operation),
+            "delete" => path_item.delete = Some(operation),
+            "patch"  => path_item.patch  = Some(operation),
+            "head"   => path_item.head   = Some(operation),
+            "options"=> path_item.options= Some(operation),
+            "trace"  => path_item.trace  = Some(operation),
+            _ => path_item.get = Some(operation),
         }
 
-        // Build the final path item, that is stored under a specific path under 'paths' key in openapi doc
-        let mut path_item = Map::new();
-        path_item.insert("summary".into(), json!("Auto-generated description of function"));
-        path_item.insert("parameters".into(), Value::Array(params_element));
-        path_item.insert(method_key, Value::Object(http_method_key));
         let path = supervisor_execution_path(module_name, func_name);
-        paths.insert(path, Value::Object(path_item));
+        paths.insert(path, path_item);
     }
 
-    // Final openapi document format
-    // TODO: Should this be turned into a struct?
-    json!({
-        "openapi": "3.0.3",
-        "info": {
-            "title": module_name,
-            "description": "Calling microservices defined as WebAssembly functions",
-            "version": "0.0.1"
-        },
-        "tags": [
-            { "name": "WebAssembly", "description": "Executing WebAssembly functions" }
-        ],
-        "servers": [
-            {
-                "url": "http://{serverIp}:{port}",
-                "variables": {
-                    "serverIp": {
-                        "default": "localhost",
-                        "description": "IP or name found with mDNS of the machine running supervisor"
-                    },
-                    "port": { "enum": ["5000","80"], "default": "5000" }
+    let mut servers: Vec<OpenApiServerObject> = Vec::new();
+    servers.push(OpenApiServerObject {
+        url: "http://{serverIp}:{port}".into(),
+        description: None,
+        variables: Some({
+            let mut vars = HashMap::new();
+            vars.insert(
+                "serverIp".into(),
+                OpenApiServerVariableObject {
+                    r#enum: None,
+                    default: "localhost".into(),
+                    description: Some("IP or name found with mDNS of the machine running supervisor".into())
                 }
-            }
-        ],
-        "paths": Value::Object(paths)
-    })
+            );
+            vars.insert(
+                "port".into(),
+                OpenApiServerVariableObject {
+                    r#enum: Some(vec!["5000".into(), "80".into()]),
+                    default: "5000".into(),
+                    description: None
+                }
+            );
+            vars
+        })
+    });
+
+    let tags = Some(vec![OpenApiTagObject {
+        name: "WebAssembly".into(),
+        description: Some("Executing WebAssembly functions".into()),
+        external_docs: None
+    }]);
+
+    OpenApiDocument {
+        openapi: OpenApiVersion::V3_0_3,
+        info: OpenApiInfo {
+            title: module_name.into(),
+            description: Some("Calling microservices defined as WebAssembly functions".into()),
+            terms_of_service: None,
+            contact: None,
+            license: None,
+            version: "0.0.1".into()
+        },
+        servers: Some(servers),
+        paths,
+        components: None,
+        security: None,
+        tags,
+        external_docs: None
+    }
+
 }
 
 
@@ -1162,68 +1203,75 @@ fn functions_output_mount_mediatype(mounts: &std::collections::HashMap<String, M
 }
 
 
+/// GET /file/module/{module_id}/description
+/// 
 /// Endpoint for getting a modules description by its id/name
-pub async fn get_module_description_by_id(path: web::Path<String>) -> HttpResponse {
+pub async fn get_module_description_by_id(path: web::Path<String>) -> Result<HttpResponse, ApiError> {
     let id_str = path.into_inner();
-    let coll = get_collection::<Document>("module").await;
+    let coll = get_collection::<ModuleDoc>(COLL_MODULE).await;
     let filter = module_filter(&id_str);
     match coll.find_one(filter).await {
         Ok(Some(doc)) => {
-            match doc.get_document("description") {
-                Ok(desc) => HttpResponse::Ok().json(desc),
-                Err(_)   => HttpResponse::Ok().json(Document::new()),
+            match &doc.description {
+                Some(desc) => {
+                    let mut v = serde_json::to_value(&desc).map_err(ApiError::internal_error)?;
+                    crate::lib::utils::normalize_object_ids(&mut v);
+                    Ok(HttpResponse::Ok().json(v))
+                },
+                None       => Ok(HttpResponse::Ok().json(serde_json::Value::Object(serde_json::Map::new()))),
             }
         }
         Ok(None) => {
-            HttpResponse::NotFound().json(json!({
-                "message": "Module not found",
-                "id": id_str
-            }))
+            Err(ApiError::not_found(format!("Module not found, module id/name: {}", id_str)))
         }
-        Err(e) => HttpResponse::InternalServerError().json(json!({
-            "message": "Error querying module",
-            "error": e.to_string()
-        })),
+        Err(e) => Err(ApiError::internal_error(format!("Error querying module: {}", e)))
     }
 }
 
 
+/// GET /file/module/{module_id}/{file_name}
+/// 
 /// Endpoint that returns a given modules datafile/mounted file based on the given name.
 /// The name must match the key for that file in the database, not the actual filename it has
 /// in the filesystem. For module, accepts either modules id, or its name.
 pub async fn get_module_datafile(
     _req: HttpRequest,
     path: web::Path<(String, String)>,
-) -> Result<NamedFile> {
+) -> Result<NamedFile, ApiError> {
     let (id_str, datafile_key) = path.into_inner();
-    let coll = get_collection::<Document>("module").await;
+    let coll = get_collection::<ModuleDoc>(COLL_MODULE).await;
     let filter = module_filter(&id_str);
 
     // Load module doc
-    let doc = coll
-        .find_one(filter)
-        .await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(e.to_string()))?
-        .ok_or_else(|| actix_web::error::ErrorNotFound("Module not found"))?;
+    let doc_opt = match coll.find_one(filter).await {
+        Ok(d) => d,
+        Err(e) => return Err(ApiError::db(format!("Database error: {}", e))),
+    };
+
+    let doc = match doc_opt {
+        Some(d) => d,
+        None => return Err(ApiError::not_found("Module not found")),
+    };
 
     // Get the datafiles section of module docs, if it exists.
-    let df_doc = doc
-        .get_document("dataFiles")
-        .map_err(|_| actix_web::error::ErrorNotFound("No dataFiles for this module"))?;
+    let df_map = match &doc.data_files {
+        Some(m) => m,
+        None => return Err(ApiError::not_found("No dataFiles for this module")),
+    };
 
     // Get the correct datafile information, if the given key matches any.
-    let file_obj = df_doc
-        .get_document(&datafile_key)
-        .map_err(|_| actix_web::error::ErrorNotFound("Datafile key not found"))?;
+    let file_obj = match df_map.get(&datafile_key) {
+        Some(f) => f,
+        None => return Err(ApiError::not_found("Datafile key not found")),
+    };
 
     // Get the path to the datafile, if it exists in the filesystem.
-    let path = file_obj
-        .get_str("path")
-        .map_err(|_| actix_web::error::ErrorInternalServerError("Datafile not found in the filesystem."))?;
+    let path = &file_obj.path;
 
     // Guess the mimetype of the file and return the file as response
     let mut named = NamedFile::open(path)
-        .map_err(|_| actix_web::error::ErrorNotFound("File not found on disk"))?;
+        .map_err(|_| ApiError::not_found("File not found on disk"))?;
+
     let guessed = mime_guess::from_path(path)
         .first_or_octet_stream();
     named = named.set_content_type(guessed);
@@ -1231,13 +1279,15 @@ pub async fn get_module_datafile(
 }
 
 
+/// GET /file/module/{module_id}/wasm
+/// 
 /// Endpoint for returning a wasm module (the binary file itself) by a modules id or name
 pub async fn get_module_wasm(
     _req: HttpRequest,
     path: web::Path<String>,
 ) -> Result<NamedFile> {
     let id_str = path.into_inner();
-    let coll = get_collection::<Document>("module").await;
+    let coll = get_collection::<ModuleDoc>(COLL_MODULE).await;
     let filter = module_filter(&id_str);
 
     // Get the path to the module
@@ -1246,12 +1296,8 @@ pub async fn get_module_wasm(
         .await
         .map_err(|e| actix_web::error::ErrorInternalServerError(e.to_string()))?
         .ok_or_else(|| actix_web::error::ErrorNotFound("Module not found"))?;
-    let wasm_doc = doc
-        .get_document("wasm")
-        .map_err(|_| actix_web::error::ErrorNotFound("No wasm for this module"))?;
-    let path = wasm_doc
-        .get_str("path")
-        .map_err(|_| actix_web::error::ErrorInternalServerError("Corrupt module (missing wasm.path)"))?;
+    let wasm_info = &doc.wasm;
+    let path = &wasm_info.path;
 
     // Return the module with content type set to application/wasm
     let mut named = NamedFile::open(path)

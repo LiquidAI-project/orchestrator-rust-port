@@ -1,31 +1,33 @@
 use chrono::Utc;
 use std::collections::HashMap;
-use mongodb::bson::oid::ObjectId;
-use mongodb::bson::{self, doc};
-use serde_json;
 use futures::TryStreamExt;
-use crate::api::module_cards::ModuleCard;
+use mongodb::bson::{doc, oid::ObjectId};
+use actix_web::{HttpResponse, Responder};
 use crate::lib::mongodb::{get_collection, find_one, insert_one};
-use crate::structs::data_source_cards::DatasourceCard;
-use actix_web::{self, HttpResponse, Responder};
-use crate::structs::node_cards::NodeCard;
-use crate::structs::zones::Zones;
 use crate::api::deployment::CreateSolutionResult;
-use crate::api::deployment::ApiError;
-use crate::structs::deployment_certificates::{
-    ValidationLog,
-    DeploymentCertificate
+use crate::structs::deployment_certificates::{DeploymentCertificate, ValidationLog};
+use crate::structs::node_cards::NodeCard;
+use crate::structs::data_source_cards::DatasourceCard;
+use crate::structs::zones::Zones;
+use crate::structs::module_cards::ModuleCard;
+use crate::lib::errors::ApiError;
+use crate::lib::constants::{
+    COLL_ZONES,
+    COLL_MODULE_CARDS,
+    COLL_NODE_CARDS,
+    COLL_DATASOURCE_CARDS,
+    COLL_DEPLOYMENT_CERTS,
 };
 
 
-/// Validates that a given deployment fulfills all the different constraints set to it
-/// via different cards, like node cards, device cards and module cards.
+/// Validates that a given deployment fulfills all constraints (zones, node cards, module cards, data source cards).
 pub async fn validate_deployment_solution(
     deployment_id: &ObjectId,
     solution: &CreateSolutionResult,
 ) -> Result<(), String> {
 
-    let zones_coll = get_collection::<Zones>("zones").await;
+    // Build a map: zone_name -> allowed risk levels
+    let zones_coll = get_collection::<Zones>(COLL_ZONES).await;
     let mut zone_allowed: HashMap<String, Vec<String>> = HashMap::new();
     let mut cursor = zones_coll
         .find(doc! {})
@@ -44,10 +46,12 @@ pub async fn validate_deployment_solution(
     let mut output_risk = "none".to_string();
     let mut logs: Vec<ValidationLog> = Vec::new();
 
+    // Validate each step in the deployment separately
     for step in &solution.sequence {
         let device_hex = step.device.to_hex();
         let module_hex = step.module.to_hex();
 
+        // Create log to store the validation results and reasoning for this step
         let mut log = ValidationLog {
             device: device_hex.clone(),
             module: module_hex.clone(),
@@ -64,10 +68,10 @@ pub async fn validate_deployment_solution(
             return Err("Device, module, or function missing in the step.".into());
         }
 
-        let nodecard = find_one::<NodeCard>("nodecards", doc! { "nodeid": &device_hex })
+        // Load module card and node card, and check that they exist and have valid format
+        let nodecard = find_one::<NodeCard>(COLL_NODE_CARDS, doc! { "nodeid": step.device })
             .await
             .map_err(|e| format!("nodecards.findOne error: {e}"))?;
-
         if nodecard.is_none() {
             log.valid = false;
             log.reasons
@@ -77,11 +81,10 @@ pub async fn validate_deployment_solution(
         }
         let nodecard = nodecard.unwrap();
         log.node_zone = nodecard.zone.clone();
-
-        let modulecard = find_one::<ModuleCard>("modulecards", doc! { "moduleid": &step.module.to_hex() })
-            .await
-            .map_err(|e| format!("modulecards.findOne error: {e}"))?;
-
+        let modulecard =
+            find_one::<ModuleCard>(COLL_MODULE_CARDS, doc! { "moduleid": step.module })
+                .await
+                .map_err(|e| format!("modulecards.findOne error: {e}"))?;
         if modulecard.is_none() {
             log.valid = false;
             log.reasons
@@ -90,13 +93,14 @@ pub async fn validate_deployment_solution(
             continue;
         }
         let modulecard = modulecard.unwrap();
-        let risk_level_module = if let Some(r) = modulecard.risk_level {
-            Ok(r)
+        let risk_level_module = if modulecard.risk_level.is_empty() {
+            return Err("Module card was missing risk level, failed to validate".to_string());
         } else {
-            Err("Module card was missing risk level, failed to validate".to_string())
-        }?;
+            modulecard.risk_level.clone()
+        };
         log.module_risk = risk_level_module.clone();
 
+         // Check that module has a valid risk level given the zone of the node its deployed to
         let allowed = zone_allowed
             .get(&nodecard.zone)
             .cloned()
@@ -114,16 +118,17 @@ pub async fn validate_deployment_solution(
             ));
         }
 
+        // Get input risk level
         let mut datasource_risk: Option<String> = None;
-        let input_type_module = if let Some(i) = modulecard.input_type {
-            Ok(i)
+        let input_type_module = if modulecard.input_type.is_empty() {
+            return Err("Module card didnt have an input type, deployment failed to validate".to_string());
         } else {
-            Err("Module card didnt have an input type, deployment failed to validate")
-        }?;
+            modulecard.input_type.clone()
+        };
         if input_type_module != "temp" {
             let ds = find_one::<DatasourceCard>(
-                "datasourcecards",
-                doc! { "type": &input_type_module, "nodeid": &step.device },
+                COLL_DATASOURCE_CARDS,
+                doc! { "type": &input_type_module, "nodeid": step.device },
             )
             .await
             .map_err(|e| format!("datasourcecards.findOne error: {e}"))?;
@@ -150,6 +155,7 @@ pub async fn validate_deployment_solution(
             ));
         }
 
+        // Check input risk against zone
         if !allowed.iter().any(|x| x == &log.input_risk) {
             log.valid = false;
             log.reasons.push(format!(
@@ -163,11 +169,8 @@ pub async fn validate_deployment_solution(
             ));
         }
 
-        let output_risk_module_card = if let Some(o) = modulecard.output_risk {
-            Ok(o)
-        } else {
-            Err("Module card was missing its output risk, failed to validate deployment")
-        }?;
+        // Get output risk level
+        let output_risk_module_card = &modulecard.output_risk;
         if output_risk_module_card == "inherit" {
             if let Some(ds_risk) = datasource_risk {
                 output_risk = ds_risk;
@@ -181,6 +184,7 @@ pub async fn validate_deployment_solution(
         }
         log.output_risk = output_risk.clone();
 
+        // Check output risk against zone
         if !allowed.iter().any(|x| x == &output_risk) {
             log.valid = false;
             log.reasons.push(format!(
@@ -201,6 +205,7 @@ pub async fn validate_deployment_solution(
         logs.push(log);
     }
 
+    // If any step was invalid, the whole deployment is invalid
     let all_valid = logs.iter().all(|l| l.valid);
     let cert = DeploymentCertificate {
         id: None,
@@ -209,11 +214,9 @@ pub async fn validate_deployment_solution(
         valid: all_valid,
         validation_logs: logs,
     };
-
-    insert_one("deploymentcertificates", &cert)
+    insert_one(COLL_DEPLOYMENT_CERTS, &cert)
         .await
         .map_err(|e| format!("insert certificate failed: {e}"))?;
-
     if !all_valid {
         return Err("Deployment validation failed.".into());
     }
@@ -221,15 +224,17 @@ pub async fn validate_deployment_solution(
 }
 
 
-/// Endpoint for getting all deployment certificates
+/// GET /deploymentCertificates
+/// Returns all deployment certificates.
 pub async fn get_deployment_certificates() -> Result<impl Responder, ApiError> {
-    let coll = get_collection::<bson::Document>("deploymentcertificates").await;
-
+    let coll = get_collection::<DeploymentCertificate>(COLL_DEPLOYMENT_CERTS).await;
     let mut cursor = coll.find(doc! {}).await.map_err(ApiError::db)?;
-    let mut out: Vec<bson::Document> = Vec::new();
+    let mut out: Vec<DeploymentCertificate> = Vec::new();
     while let Some(doc) = cursor.try_next().await.map_err(ApiError::db)? {
         out.push(doc);
     }
+
+    // Normalize object ids before returning (UI compatibility)
     let mut v = serde_json::to_value(&out).map_err(ApiError::db)?;
     crate::lib::utils::normalize_object_ids(&mut v);
     Ok(HttpResponse::Ok().json(v))

@@ -63,8 +63,13 @@ use orchestrator::api::deployment::{
 use orchestrator::api::execution::execute;
 use orchestrator::api::deployment_certificates::get_deployment_certificates;
 use orchestrator::lib::zeroconf;
-use log::{error, debug};
+use log::{error, debug, info};
 use actix_web::middleware::NormalizePath;
+use orchestrator::lib::initializer::{
+    handle_orchestrator_export,
+    handle_orchestrator_import,
+    add_initial_data
+};
 
 // Placeholder handler
 async fn placeholder(req: HttpRequest) -> impl Responder {
@@ -88,6 +93,14 @@ async fn main() -> std::io::Result<()> {
     // Initialize logging with default level = info (unless overridden by env)
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    // Initialize the database with data from init folder, if init folder exists and AUTO_INITIALIZE env var is set to true
+    let initialize = std::env::var("AUTO_INITIALIZE").unwrap_or_else(|_| "false".to_string());
+    if initialize.to_ascii_lowercase() == "true" {
+        if let Err(e) = add_initial_data().await { error!("Initialization failed: {:?}", e); }
+    } else {
+        info!("Skipping automatic initialization from init folder.");
+    }
+
     // Start mdns browser to start polling for available supervisors
     std::thread::spawn(|| {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -102,7 +115,7 @@ async fn main() -> std::io::Result<()> {
         debug!("Mdns advertisement started succesfully.");
     }
 
-    println!("... Device discovery setup done.");
+    info!("... Device discovery setup done.");
 
     // Start a separate loop to perform continous healthchecks on known devices
     std::thread::spawn(|| {
@@ -110,9 +123,9 @@ async fn main() -> std::io::Result<()> {
         rt.block_on(run_health_check_loop());
     });
 
-    println!("... Healthcheck loop started");
+    info!("... Healthcheck loop started");
 
-    println!("✅ Initialization tasks done, starting server ...\n");
+    info!("✅ Initialization tasks done, starting server ...\n");
 
     HttpServer::new(move || {
         App::new()
@@ -277,6 +290,15 @@ async fn main() -> std::io::Result<()> {
                 .route(web::get().to(get_zones_and_risk_levels)) // Get zone and risk level card
                 .route(web::post().to(parse_zones_and_risk_levels)) // Create a new zone and risk level card
                 .route(web::delete().to(delete_all_zones_and_risk_levels))) // Delete all zones and risk levels (Doesnt exist in original version)
+
+            // Routes that can be called to import/export the current orchestrator setup from/to the init folder
+            // Status of implementations:
+            // ✅ GET /export
+            // ✅ GET /import
+            .service(web::resource("/export").name("/export")
+                .route(web::get().to(handle_orchestrator_export)))
+            .service(web::resource("/import").name("/import")
+                .route(web::get().to(handle_orchestrator_import)))
 
             // Miscellaneous routes, none of these exist in original version, but these are possible improvements for functionality
             // Status of implementations:

@@ -1,4 +1,6 @@
 use serde_json::Value;
+use crate::structs::device::{DeviceDescription, PlatformInfo, CpuInfo, MemoryInfo, OsInfo};
+use std::collections::HashMap;
 
 /// Recursively converts Extended JSON ObjectId objects {"$oid":"…"} into plain strings "…"
 /// (Mongodb returns ObjectsIds in a format that frontend doesnt know how to handle, this fixes that)
@@ -23,5 +25,32 @@ pub fn normalize_object_ids(value: &mut Value) {
             }
         }
         _ => {}
+    }
+}
+
+
+/// Build a minimal placeholder description when a device hasn't reported one yet.
+pub fn default_device_description() -> DeviceDescription {
+    DeviceDescription {
+        platform: PlatformInfo {
+            cpu: CpuInfo {
+                clock_speed: {
+                    let mut m = HashMap::new();
+                    m.insert("Hz".to_string(), 0);
+                    m
+                },
+                core_count: 0,
+                human_readable_name: String::new(),
+            },
+            memory: MemoryInfo { bytes: 0 },
+            network: HashMap::new(),
+            system: OsInfo {
+                host_name: String::new(),
+                kernel: String::new(),
+                name: String::new(),
+                os: String::new(),
+            },
+        },
+        supervisor_interfaces: Vec::new(),
     }
 }

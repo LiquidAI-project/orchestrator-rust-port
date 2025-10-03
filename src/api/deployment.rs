@@ -4,21 +4,24 @@ use mongodb::bson::oid::ObjectId;
 use mongodb::bson::doc;
 use serde_json;
 use futures::TryStreamExt;
-use crate::lib::mongodb::{get_collection, find_one};
+use crate::lib::mongodb::{find_one, get_collection};
 use reqwest;
 use futures::future::join_all;
 use serde_json::Value;
 use mongodb::bson;
 use serde_json::json;
 use actix_web::{
-    http::StatusCode,
     web::{self, Path},
     HttpResponse, Responder,
 };
-use actix_web::ResponseError;
-use log::{warn, debug};
+use log::{warn, debug, error};
 use crate::lib::zeroconf::get_listening_address;
-use crate::lib::constants::SUPPORTED_FILE_TYPES;
+use crate::lib::constants::{
+    COLL_DEVICE,
+    COLL_MODULE,
+    COLL_DEPLOYMENT,
+    SUPPORTED_FILE_TYPES
+};
 use crate::structs::device::DeviceDoc;
 use crate::structs::module::{
     ModuleDoc,
@@ -55,9 +58,10 @@ use crate::structs::openapi::{
 };
 use crate::api::deployment_certificates::validate_deployment_solution;
 use std::time::Duration;
+use crate::lib::errors::ApiError;
 
 
-/// One step in the sequence
+/// One step in the deployment sequence
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiSequenceStep {
     pub device: String, // The _id of the device in mongodb, or "" for any device
@@ -96,6 +100,8 @@ pub struct AssignedStep {
 }
 
 
+/// The result of solving a deployment sequence. Either a new deployment was created (with its id),
+/// or an existing deployment was updated (with the full solution).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SolveResult {
     DeploymentId(ObjectId),
@@ -103,6 +109,7 @@ pub enum SolveResult {
 }
 
 
+/// The full deployment solution that is stored in the deployment document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSolutionResult {
     #[serde(rename = "fullManifest")]
@@ -111,65 +118,40 @@ pub struct CreateSolutionResult {
 }
 
 
-// TODO: Move these error codes to different file, and use them through the entire orchestrator
-// TODO: Use consistently
-/// Error helper to produce JSON error responses consistently
-#[derive(Debug)]
-pub struct ApiError {
-    status: StatusCode,
-    msg: String,
-}
-impl ApiError {
-    pub fn bad_request(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::BAD_REQUEST, msg: msg.into() }
-    }
-    pub fn not_found(msg: impl Into<String>) -> Self {
-        Self { status: StatusCode::NOT_FOUND, msg: msg.into() }
-    }
-    pub fn db(e: impl std::fmt::Display) -> Self {
-        Self { status: StatusCode::INTERNAL_SERVER_ERROR, msg: format!("db error: {e}") }
-    }
-}
-impl std::fmt::Display for ApiError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.status, self.msg)
-    }
-}
-impl ResponseError for ApiError {
-    fn status_code(&self) -> StatusCode { self.status }
-    fn error_response(&self) -> HttpResponse {
-        HttpResponse::build(self.status).json(json!({ "error": self.msg }))
-    }
-}
-
-
+/// GET /file/manifest/{deployment_id}
+/// 
 /// Endpoint for fetching a specific deployment (by id)
 pub async fn get_deployment(
     path: Path<String>,
 ) -> Result<impl Responder, ApiError> {
     let deployment_id = path.into_inner();
-    let coll = get_collection::<DeploymentDoc>("deployment").await;
+    let coll = get_collection::<DeploymentDoc>(COLL_DEPLOYMENT).await;
 
     let oid = ObjectId::parse_str(&deployment_id)
         .map_err(|_| ApiError::bad_request(format!("invalid deployment id '{}'", deployment_id)))?;
 
     match coll.find_one(doc! { "_id": &oid }).await.map_err(ApiError::db)? {
-        Some(doc) => Ok(HttpResponse::Ok().json(doc)),
+        Some(doc) => {
+            let mut v = serde_json::to_value(&doc).map_err(ApiError::internal_error)?;
+            crate::lib::utils::normalize_object_ids(&mut v);
+            Ok(HttpResponse::Ok().json(v))
+        },
         None => Err(ApiError::not_found(format!("no deployment matches id '{}'", deployment_id))),
     }
 }
 
 
+/// GET /file/manifest
+/// 
 /// Endpoint for fetching ALL deployments
 pub async fn get_deployments() -> Result<impl Responder, ApiError> {
-    let coll = get_collection::<DeploymentDoc>("deployment").await;
-
+    let coll = get_collection::<DeploymentDoc>(COLL_DEPLOYMENT).await;
     let mut cursor = coll.find(doc! {}).await.map_err(ApiError::db)?;
     let mut out: Vec<DeploymentDoc> = Vec::new();
     while let Some(doc) = cursor.try_next().await.map_err(ApiError::db)? {
         out.push(doc);
     }
-    let mut v = serde_json::to_value(&out).map_err(ApiError::db)?;
+    let mut v = serde_json::to_value(&out).map_err(ApiError::internal_error)?;
     crate::lib::utils::normalize_object_ids(&mut v);
     Ok(HttpResponse::Ok().json(v))
 }
@@ -199,12 +181,14 @@ fn validate_sequence(manifest: &Sequence) -> Result<(), String> {
 }
 
 
+/// POST /file/manifest
+/// 
 /// Endpoint for creating a new deployment.
-pub async fn create_deployment(body: web::Json<Sequence>) -> HttpResponse {
+pub async fn create_deployment(body: web::Json<Sequence>) -> Result<impl Responder, ApiError> {
 
     // Check that the sequence that was sent has valid format
     if let Err(msg) = validate_sequence(&body) {
-        return HttpResponse::BadRequest().json(serde_json::json!({ "error": msg }));
+        return Err(ApiError::bad_request(msg));
     }
 
     // Get the url from which modules can be downloaded from (basically orchestrators address)
@@ -223,42 +207,44 @@ pub async fn create_deployment(body: web::Json<Sequence>) -> HttpResponse {
         &supported_file_types[..],
     ).await
     .map_err(|e| {
-        eprintln!("Failed constructing solution for manifest: {e}");
-        return HttpResponse::BadRequest().json(serde_json::json!({ "error": e }));
+        error!("Failed constructing solution for manifest: {e}");
+        ApiError::bad_request(e)
     });
 
     // Return the id of the deployment that was just created in the format the UI expects it, or an error.
     match res {
         Ok(SolveResult::DeploymentId(oid)) => {
-            HttpResponse::Created()
+            Ok(HttpResponse::Created()
                 .content_type("text/plain; charset=utf-8")
-                .body(format!("\"{}\"", oid.to_hex()))
+                .body(format!("\"{}\"", oid.to_hex())))
         },
         // This shouldnt happen, it would mean the manifest was updated even though resolving was set to false
         Ok(SolveResult::Solution(_)) => {
             let msg = "Failed constructing solution for manifest: manifest was updated instead.";
-            eprintln!("{}", msg);
-            HttpResponse::InternalServerError().json(serde_json::json!({ "error": msg }))
+            error!("{}", msg);
+            Err(ApiError::internal_error(msg))
         },
         Err(e) => {
-            e
+            Err(e)
         }
     }
 }
 
 
+/// POST /file/manifest/{deployment_id}
+/// 
 /// Endpoint for deploying an existing deployment. This sends the deployment document to the 
 /// necessary devices, which then will download the necessary resources (mounts and wasm files) from
 /// the orchestrator.
 pub async fn http_deploy(path: Path<String>) -> Result<impl Responder, ApiError> {
     let deployment_param = path.into_inner();
-    let coll = get_collection::<DeploymentDoc>("deployment").await;
+    let coll = get_collection::<DeploymentDoc>(COLL_DEPLOYMENT).await;
 
     // Try getting the deployment by id or name
     let filter = match ObjectId::parse_str(&deployment_param) {
         Ok(oid) => doc! { "_id": oid },
         Err(_) => {
-            eprintln!(
+            warn!(
                 "Given deployment id '{}' not ObjectId; trying to use it as a name instead",
                 deployment_param
             );
@@ -296,24 +282,17 @@ pub async fn http_deploy(path: Path<String>) -> Result<impl Responder, ApiError>
             Ok(HttpResponse::Ok().json(json!({ "deviceResponses": device_responses })))
         }
         Err(err) => {
-            let msg = err.to_string();
-            if msg.to_lowercase().contains("device not found") {
-                Err(ApiError::not_found(msg))
-            } else {
-                eprintln!("try checking supervisor logs: {msg}");
-                Err(ApiError {
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    msg,
-                })
-            }
+            Err(err)
         }
     }
 }
 
 
+/// DELETE /file/manifest
+/// 
 /// Endpoint for deleting all deployments.
 pub async fn delete_deployments() -> Result<impl Responder, ApiError> {
-    let coll = get_collection::<bson::Document>("deployment").await;
+    let coll = get_collection::<bson::Document>(COLL_DEPLOYMENT).await;
     let res = coll
         .delete_many(doc! {})
         .await
@@ -322,13 +301,15 @@ pub async fn delete_deployments() -> Result<impl Responder, ApiError> {
 }
 
 
+/// DELETE /file/manifest/{deployment_id}
+/// 
 /// Endpoint for deleting a specific deployment (by its id)
 pub async fn delete_deployment(path: Path<String>) -> Result<impl Responder, ApiError> {
     let deployment_id = path.into_inner();
     let oid = ObjectId::parse_str(&deployment_id)
         .map_err(|_| ApiError::bad_request(format!("invalid deployment id '{}'", deployment_id)))?;
 
-    let coll = get_collection::<bson::Document>("deployment").await;
+    let coll = get_collection::<bson::Document>(COLL_DEPLOYMENT).await;
     let res = coll
         .delete_one(doc! { "_id": oid })
         .await
@@ -342,6 +323,8 @@ pub async fn delete_deployment(path: Path<String>) -> Result<impl Responder, Api
 }
 
 
+/// PUT /file/manifest/{deployment_id}
+/// 
 /// Endpoint for updating an existing deployment. Requires that a deployment exists that has
 /// a matching id.
 pub async fn update_deployment(
@@ -352,7 +335,7 @@ pub async fn update_deployment(
     let oid = ObjectId::parse_str(&deployment_id)
         .map_err(|_| ApiError::bad_request(format!("invalid deployment id '{}'", deployment_id)))?;
 
-    let coll = get_collection::<bson::Document>("deployment").await;
+    let coll = get_collection::<bson::Document>(COLL_DEPLOYMENT).await;
 
     let Some(old_raw) = coll
         .find_one(doc! { "_id": &oid })
@@ -389,13 +372,13 @@ pub async fn update_deployment(
     )
     .await
     .map_err(|e| {
-        eprintln!("Failed updating manifest for deployment: {e}");
-        ApiError::db(e)
+        error!("Failed updating manifest for deployment: {e}");
+        ApiError::internal_error(e)
     })?;
 
     let solution = match res {
         SolveResult::Solution(s) => s,
-        _ => return Err(ApiError::db("unexpected solver result (expected Solution)")),
+        _ => return Err(ApiError::internal_error("unexpected solver result (expected Solution)")),
     };
 
     // If the deployment was active, re-deploy it on the targeted devices.
@@ -422,16 +405,7 @@ pub async fn update_deployment(
                 Ok(HttpResponse::Ok().json(json!({ "deviceResponses": device_responses })))
             }
             Err(err) => {
-                let msg = err.to_string();
-                if msg.to_lowercase().contains("device not found") {
-                    Err(ApiError::not_found(msg))
-                } else {
-                    eprintln!("try checking supervisor logs: {msg}");
-                    Err(ApiError {
-                        status: actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        msg,
-                    })
-                }
+                Err(err)
             }
         }
     } else {
@@ -463,7 +437,7 @@ pub async fn solve(
                 Ok(oid) => doc! { "_id": oid },
                 Err(_) => doc! { "name": &step.device },
             };
-            let device = find_one::<DeviceDoc>("device", device_filter)
+            let device = find_one::<DeviceDoc>(COLL_DEVICE, device_filter)
                 .await
                 .map_err(|e| format!("device.findOne error for '{}': {e}", step.device))?
                 .ok_or_else(|| format!("device not found by id '{}'", step.device))?;
@@ -475,7 +449,7 @@ pub async fn solve(
             Ok(oid) => doc! { "_id": oid },
             Err(_) => doc! { "name": &step.module },
         };
-        let module = find_one::<ModuleDoc>("module", module_filter)
+        let module = find_one::<ModuleDoc>(COLL_MODULE, module_filter)
             .await
             .map_err(|e| format!("module.findOne error for '{}': {e}", step.module))?
             .ok_or_else(|| format!("module not found by id '{}'", step.module))?;
@@ -498,7 +472,7 @@ pub async fn solve(
         let oid = ObjectId::parse_str(given_id).map_err(|e| format!("Deployment id was not valid object id, error: {:?}", e))?;
         oid
     } else {
-        let deployment_collection = get_collection::<bson::Document>("deployment").await;
+        let deployment_collection = get_collection::<bson::Document>(COLL_DEPLOYMENT).await;
         let mut doc_to_insert = bson::to_document(deployment_sequence)
             .map_err(|e| format!("serialize manifest failed: {e}"))?;
         doc_to_insert.remove("_id"); // Remove _id to prevent accidentally attempting to overwrite existing deployment
@@ -524,7 +498,7 @@ pub async fn solve(
 
     // Validate the deployment, but dont stop execution if validation fails
     if let Err(err) = validate_deployment_solution(&deployment_id, &solution).await {
-        let dep_coll = get_collection::<bson::Document>("deployment").await;
+        let dep_coll = get_collection::<bson::Document>(COLL_DEPLOYMENT).await;
         let _ = dep_coll
             .update_one(
                 doc! { "_id": &deployment_id },
@@ -533,7 +507,7 @@ pub async fn solve(
             .await;
     }
 
-    let dep_coll = get_collection::<bson::Document>("deployment").await;
+    let dep_coll = get_collection::<bson::Document>(COLL_DEPLOYMENT).await;
     let set_doc = bson::to_document(&solution)
         .map_err(|e| format!("serialize solution failed: {e}"))?;
     dep_coll
@@ -597,20 +571,20 @@ pub async fn message_device_deploy(device: &DeviceDoc, manifest: &DeploymentNode
 
 
 /// Send the deployment docs to devices asynchronously
-pub async fn deploy(deployment: &DeploymentDoc) -> Result<HashMap<String, Value>, String> {
+pub async fn deploy(deployment: &DeploymentDoc) -> Result<HashMap<String, Value>, ApiError> {
     let deployment_solution = &deployment.full_manifest;
 
     let mut tasks = Vec::with_capacity(deployment_solution.len());
 
     for (device_id_hex, manifest) in deployment_solution.iter() {
         let oid = ObjectId::parse_str(device_id_hex)
-            .map_err(|e| format!("bad device id '{}': {e}", device_id_hex))?;
+            .map_err(|e| ApiError::bad_request(format!("bad device id '{}': {e}", device_id_hex)))?;
 
-        let dev_opt = find_one::<DeviceDoc>("device", doc! { "_id": &oid })
+        let dev_opt = find_one::<DeviceDoc>(COLL_DEVICE, doc! { "_id": &oid })
             .await
-            .map_err(|e| format!("device.findOne error for '{}': {e}", device_id_hex))?;
+            .map_err(|e| ApiError::db(format!("device.findOne error for '{}': {e}", device_id_hex)))?;
 
-        let device = dev_opt.ok_or_else(|| format!("device not found: {}", device_id_hex))?;
+        let device = dev_opt.ok_or_else(|| ApiError::not_found(format!("device not found: {}", device_id_hex)))?;
         let manifest_clone = manifest.clone();
         let device_id_for_map = device_id_hex.clone();
 
@@ -629,13 +603,13 @@ pub async fn deploy(deployment: &DeploymentDoc) -> Result<HashMap<String, Value>
                 out.insert(device_id, val);
             }
             Err(e) => {
-                return Err(format!("deployment failed: {}", e));
+                return Err(ApiError::internal_error(format!("deployment failed: {}", e)));
             }
         }
     }
 
     if out.is_empty() {
-        return Err("deployment failed: empty response".into());
+        return Err(ApiError::internal_error("deployment failed: empty response"));
     }
 
     Ok(out)
@@ -730,9 +704,12 @@ pub fn create_solution(
         // Find the openapi description of the supervisor execution path.
         // The execution path is the path on the supervisor that you can call to execute a specific function
         let func_path_key = supervisor_execution_path(&step.module.name, &step.func);
-        let path_item = step
+        let description_doc = step
             .module
             .description
+            .as_ref()
+            .ok_or_else(|| format!("module.description is missing for '{}'", step.module.name))?;
+        let path_item = description_doc
             .paths
             .get(&func_path_key)
             .ok_or_else(|| {
@@ -817,8 +794,8 @@ pub fn create_solution(
         let server_url_template = step
             .module
             .description
-            .servers
             .as_ref()
+            .and_then(|desc| desc.servers.as_ref())
             .and_then(|v| v.get(0))
             .ok_or_else(|| "module.servers is missing or empty".to_string())?
             .url
@@ -1004,6 +981,7 @@ fn openapi_object_to_simple_schema(
 }
 
 
+/// Converts a request body that is expected to be multipart/form-data into a MultipartMediaType struct
 fn request_body_to_multipart(rb: &crate::structs::deployment::RequestBody)
     -> Result<MultipartMediaType, String>
 {
@@ -1032,6 +1010,8 @@ fn request_body_to_multipart(rb: &crate::structs::deployment::RequestBody)
 }
 
 
+/// Builds the per-stage (deployment/execution/output) mount list for a 
+/// given module function on a given endpoint.
 pub fn mounts_for(
     module: &ModuleDoc,
     func: &str,
@@ -1049,6 +1029,8 @@ pub fn mounts_for(
 
             let func_mounts = module
                 .mounts
+                .as_ref()
+                .ok_or_else(|| format!("mounts missing for module '{}'", module.name))?
                 .get(func)
                 .ok_or_else(|| format!("mounts missing for module '{}' function '{}'", module.name, func))?;
 
@@ -1090,6 +1072,8 @@ pub fn mounts_for(
     } else if supported_file_types.iter().any(|mt| *mt == response.media_type) {
         let func_mounts = module
             .mounts
+            .as_ref()
+            .ok_or_else(|| format!("mounts missing for module '{}'", module.name))?
             .get(func)
             .ok_or_else(|| format!("mounts missing for module '{}' function '{}'", module.name, func))?;
 
@@ -1156,7 +1140,7 @@ pub async fn check_device_selection(sequence: Vec<SequenceItemHydrated>) -> Resu
     
     // First fetch all devices, and remove orchestrator from the selection since its not capable of running wasm modules.
     // TODO: Better way to identify and remove orchestrator, name is not just "orchestrator" always.
-    let device_collection = get_collection::<DeviceDoc>("device").await;
+    let device_collection = get_collection::<DeviceDoc>(COLL_DEVICE).await;
     let mut cursor = device_collection.find(doc! {}).await.map_err(|e| format!("Database error when trying to get all devices. Error: {:?}", e))?;
     let mut available_devices: Vec<DeviceDoc> = Vec::new();
     while let Some(doc) = cursor.try_next().await.map_err(|e| format!("Database error when trying to get all devices. Error: {:?}", e))? {
@@ -1229,9 +1213,11 @@ pub fn module_data(module: &ModuleDoc, package_base_url: &str) -> Result<DeviceM
     let binary = format!("{}/file/module/{}/wasm", base, mod_id);
     let description = format!("{}/file/module/{}/description", base, mod_id);
     let mut other: HashMap<String, String> = HashMap::new();
-    for filename in module.data_files.keys() {
-        let url = format!("{}/file/module/{}/{}", base, mod_id, filename);
-        other.insert(filename.clone(), url);
+    if let Some(data_files) = module.data_files.as_ref() {
+        for filename in data_files.keys() {
+            let url = format!("{}/file/module/{}/{}", base, mod_id, filename);
+            other.insert(filename.clone(), url);
+        }
     }
 
     Ok(DeviceModule {
