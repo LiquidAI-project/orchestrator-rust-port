@@ -9,6 +9,7 @@ pub mod api {
     pub mod module;
     pub mod node_cards;
     pub mod zones_and_risk_levels;
+    pub mod ws_logs;
 }
 
 pub mod lib {

@@ -1,4 +1,7 @@
+use std::net::SocketAddr;
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Responder};
+use orchestrator::lib::constants::COLL_LOGS;
+use orchestrator::lib::mongodb::get_collection;
 use serde_json::json;
 use actix_cors::Cors;
 use orchestrator::api::device::{
@@ -70,6 +73,8 @@ use orchestrator::lib::initializer::{
     handle_orchestrator_import,
     add_initial_data
 };
+use orchestrator::api::ws_logs::{run_ws_logs_server};
+use orchestrator::structs::logs::SupervisorLog;
 
 // Placeholder handler
 async fn placeholder(req: HttpRequest) -> impl Responder {
@@ -99,6 +104,21 @@ async fn main() -> std::io::Result<()> {
         if let Err(e) = add_initial_data().await { error!("Initialization failed: {:?}", e); }
     } else {
         info!("Skipping automatic initialization from init folder.");
+    }
+
+    // Use websockets if WASMIOT_USE_WEB_SOCKETS env var is set to true
+    let use_ws = std::env::var("WASMIOT_USE_WEB_SOCKETS")
+        .ok()
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    if use_ws {
+        let logs_coll = get_collection::<SupervisorLog>(COLL_LOGS).await;
+        let ws_addr: SocketAddr = "0.0.0.0:3001".parse().unwrap();
+        tokio::spawn(async move {
+            if let Err(e) = run_ws_logs_server(ws_addr, logs_coll).await {
+                error!("WebSocket server failed: {e:?}");
+            }
+        });
     }
 
     // Start mdns browser to start polling for available supervisors
