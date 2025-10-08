@@ -111,9 +111,10 @@ async fn main() -> std::io::Result<()> {
         .ok()
         .map(|v| v == "true")
         .unwrap_or(false);
+    let ws_port = std::env::var("WASMIOT_WEB_SOCKET_PORT").unwrap_or("3001".to_string());
     if use_ws {
         let logs_coll = get_collection::<SupervisorLog>(COLL_LOGS).await;
-        let ws_addr: SocketAddr = "0.0.0.0:3001".parse().unwrap();
+        let ws_addr: SocketAddr = format!("0.0.0.0:{}",ws_port).parse().unwrap();
         tokio::spawn(async move {
             if let Err(e) = run_ws_logs_server(ws_addr, logs_coll).await {
                 error!("WebSocket server failed: {e:?}");
