@@ -73,6 +73,7 @@ pub async fn post_supervisor_log(form: Form<std::collections::HashMap<String, St
 
         // Save the log data in the database in correct format
         let supervisor_log = SupervisorLog {
+            id: None,
             device_ip: verified_supervisor_log.device_ip,
             device_name: verified_supervisor_log.device_name,
             func_name: verified_supervisor_log.func_name,

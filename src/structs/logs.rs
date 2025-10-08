@@ -1,3 +1,4 @@
+use bson::oid::ObjectId;
 use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
 
@@ -5,6 +6,8 @@ use chrono::{DateTime, Utc};
 /// Structure for the supervisor log data, this is the format its saved into database as
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SupervisorLog {
+    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
+    pub id: Option<ObjectId>,
     #[serde(rename = "deviceIP")]
     pub device_ip: String,
     #[serde(rename = "deviceName")]
