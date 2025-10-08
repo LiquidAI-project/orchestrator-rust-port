@@ -94,6 +94,10 @@ async fn main() -> std::io::Result<()> {
         Ok(path) => println!("... Loaded .env from {:?}", path),
         Err(err) => println!("Could not load .env file: {:?}", err),
     }
+    let port: u16 = std::env::var("PUBLIC_PORT")
+        .unwrap_or(orchestrator::lib::constants::PUBLIC_PORT.to_string())
+        .parse()
+        .expect("PUBLIC_PORT must be a valid u16!");
 
     // Initialize logging with default level = info (unless overridden by env)
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -331,7 +335,7 @@ async fn main() -> std::io::Result<()> {
             .service(actix_files::Files::new("/", "./frontend").index_file("index.html"))
             
     })
-    .bind(("0.0.0.0", 3000))?
+    .bind(("0.0.0.0", port))?
     .run()
     .await
 }
