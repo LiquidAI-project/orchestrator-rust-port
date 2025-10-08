@@ -43,7 +43,7 @@ pub async fn export_orchestrator_setup() -> anyhow::Result<()> {
 
     // Recreate init folder to clear it out
     let init_folder = env::var("WASMIOT_INIT_FOLDER").unwrap_or_else(|_| "./init".to_string());
-    delete_folder(&init_folder)?;
+    delete_folder_contents(&init_folder)?;
     create_folder(&init_folder)?;
 
     // Copy the ./files folder content into new ./init folder
@@ -215,7 +215,7 @@ pub async fn add_initial_data() -> anyhow::Result<()> {
     // 1) Replace ./files with ./init/files (if exists)
     let init_files = init_path.join("files");
     if init_files.exists() {
-        if let Err(e) = delete_folder(FILE_ROOT_DIR) {
+        if let Err(e) = delete_folder_contents(FILE_ROOT_DIR) {
             warn!("Failed to delete local files folder {:?}: {}", FILE_ROOT_DIR, e);
         }
         copy_dir_into(&init_files, ".")?;
@@ -348,11 +348,20 @@ fn ensure_object_id(doc: &mut mongodb::bson::Document) {
 
 
 
-/// Helper function for deleting a folder
-fn delete_folder(path: &str) -> std::io::Result<()> {
+/// Helper function for deleting a folders contents
+fn delete_folder_contents(path: &str) -> std::io::Result<()> {
     let p = Path::new(path);
-    if p.exists() {
-        fs::remove_dir_all(p)?;
+    if !p.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&p)? {
+        let entry = entry?;
+        let p = entry.path();
+        if p.is_dir() {
+            fs::remove_dir_all(&p)?;
+        } else {
+            fs::remove_file(&p)?;
+        }
     }
     Ok(())
 }
