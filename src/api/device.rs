@@ -292,6 +292,14 @@ async fn fetch_device_health(device: &DeviceDoc) -> Option<HealthReport> {
             if let Some(header_value) = res.headers().get("Custom-Orchestrator-Set") {
                 if let Ok(value) = header_value.to_str() {
                     debug!("Custom-Orchestrator-Set header: {}", value);
+                    if value == "false" {
+                        info!("Device '{}' requested orchestrator registration", device.name);
+                        if let Err(e) = register_orchestrator(device).await {
+                            warn!("❗️ Failed to register orchestrator for device '{}': {}", device.name, e);
+                        } else {
+                            info!("✅ Registered orchestrator for device '{}'", device.name);
+                        }
+                    }
                 }
             }
             match res.json::<serde_json::Value>().await {
