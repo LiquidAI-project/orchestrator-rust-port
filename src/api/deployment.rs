@@ -430,7 +430,7 @@ pub async fn solve(
 
         // Find the corresponding device doc, if any.
         let device_id = &step.device;
-        let device = if device_id.is_empty() {
+        let device = if device_id.is_empty() || device_id == "any" || device_id == "null" {
             None
         } else {
             let device_filter = match ObjectId::parse_str(&step.device) {
