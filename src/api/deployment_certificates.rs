@@ -1,8 +1,9 @@
 use chrono::Utc;
+use serde_json::json;
 use std::collections::HashMap;
 use futures::TryStreamExt;
 use mongodb::bson::{doc, oid::ObjectId};
-use actix_web::{HttpResponse, Responder};
+use actix_web::{HttpResponse, Responder, web::Path};
 use crate::lib::mongodb::{get_collection, find_one, insert_one};
 use crate::api::deployment::CreateSolutionResult;
 use crate::structs::deployment_certificates::{DeploymentCertificate, ValidationLog};
@@ -238,4 +239,33 @@ pub async fn get_deployment_certificates() -> Result<impl Responder, ApiError> {
     let mut v = serde_json::to_value(&out).map_err(ApiError::db)?;
     crate::lib::utils::normalize_object_ids(&mut v);
     Ok(HttpResponse::Ok().json(v))
+}
+
+
+/// DELETE /deploymentCertificates
+/// 
+/// Endpoint for deleting all deployment certificates.
+pub async fn delete_all_deployment_certificates() -> Result<impl Responder, ApiError> {
+    let coll = get_collection::<DeploymentCertificate>(COLL_DEPLOYMENT_CERTS).await;
+    let res = coll.delete_many(doc!{}).await.map_err(ApiError::db)?;
+    Ok(HttpResponse::Ok().json(json!({ "deletedCount": res.deleted_count })))
+}
+
+
+/// DELETE /deploymentCertificates/{deployment_id}
+/// 
+/// Endpoint for deleting a specific deployment certificate (by its deploymentId)
+pub async fn delete_deployment_certificate(path: Path<String>) -> Result<impl Responder, ApiError> {
+    let id = path.into_inner();
+    let oid = ObjectId::parse_str(&id)
+        .map_err(|_| ApiError::bad_request(format!("invalid deployment certificate id '{}'", id)))?;
+
+    let coll = get_collection::<DeploymentCertificate>(COLL_DEPLOYMENT_CERTS).await;
+    let res = coll.delete_one(doc!{ "deploymentId": &oid }).await.map_err(ApiError::db)?;
+
+    if res.deleted_count == 0 {
+        Err(ApiError::not_found(format!("no deployment certificate matches id '{}'", id)))
+    } else {
+        Ok(HttpResponse::Ok().json(json!({ "deletedCount": res.deleted_count })))
+    }
 }

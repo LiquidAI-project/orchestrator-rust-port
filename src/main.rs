@@ -64,7 +64,11 @@ use orchestrator::api::deployment::{
     http_deploy
 };
 use orchestrator::api::execution::execute;
-use orchestrator::api::deployment_certificates::get_deployment_certificates;
+use orchestrator::api::deployment_certificates::{
+    delete_all_deployment_certificates,
+    delete_deployment_certificate,
+    get_deployment_certificates
+};
 use orchestrator::lib::zeroconf;
 use log::{error, debug, info};
 use actix_web::middleware::NormalizePath;
@@ -276,8 +280,13 @@ async fn main() -> std::io::Result<()> {
             // Deployment certificate related routes (file: routes/deploymentCertificates)
             // Status of implementations:
             // ✅ GET /deploymentCertificates
+            // ✅ DELETE /deploymentCertificates
+            // ✅ DELETE /deploymentCertificates/{deployment_id}
             .service(web::resource("/deploymentCertificates").name("/deploymentCertificates")
-                .route(web::get().to(get_deployment_certificates))) // Get a list of all deployment certificates (created by the orchestrator, not the user)
+                .route(web::get().to(get_deployment_certificates)) // Get a list of all deployment certificates (created by the orchestrator, not the user)
+                .route(web::delete().to(delete_all_deployment_certificates))) // Delete all deployment certificates
+            .service(web::resource("/deploymentCertificates/{deployment_id}").name("/deploymentCertificates/{deployment_id}")
+                .route(web::delete().to(delete_deployment_certificate))) // Delete a specific deployment certificate
 
             // Module card related routes (file: routes/moduleCards)
             // Status of implementations:

@@ -4,15 +4,14 @@ use mongodb::bson::oid::ObjectId;
 use mongodb::bson::doc;
 use serde_json;
 use futures::TryStreamExt;
-use crate::lib::mongodb::{find_one, get_collection};
+use crate::{api::deployment_certificates::{delete_all_deployment_certificates, delete_deployment_certificate}, lib::mongodb::{find_one, get_collection}};
 use reqwest;
 use futures::future::join_all;
 use serde_json::Value;
 use mongodb::bson;
 use serde_json::json;
 use actix_web::{
-    web::{self, Path},
-    HttpResponse, Responder,
+    body::MessageBody, web::{self, Path}, HttpResponse, Responder
 };
 use log::{warn, debug, error};
 use crate::lib::zeroconf::get_listening_address;
@@ -292,12 +291,34 @@ pub async fn http_deploy(path: Path<String>) -> Result<impl Responder, ApiError>
 /// 
 /// Endpoint for deleting all deployments.
 pub async fn delete_deployments() -> Result<impl Responder, ApiError> {
-    let coll = get_collection::<bson::Document>(COLL_DEPLOYMENT).await;
+    let coll = get_collection::<DeploymentDoc>(COLL_DEPLOYMENT).await;
     let res = coll
         .delete_many(doc! {})
         .await
         .map_err(ApiError::db)?;
-    Ok(HttpResponse::Ok().json(json!({ "deletedCount": res.deleted_count })))
+
+    let mut certificate_deletion_count = 0;
+    let response = delete_all_deployment_certificates().await;
+    if let Err(e) = response {
+        warn!("Failed deleting all deployment certificates: {}", e);
+    } else {
+        // Get the response from certificate deletion to see how many were deleted
+        if let Ok(responder) = response {
+            let r = responder.respond_to(&actix_web::test::TestRequest::default().to_http_request());
+            if let Ok(body) = r.into_body().try_into_bytes() {
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) {
+                    if let Some(count) = json.get("deletedCount").and_then(|v| v.as_u64()) {
+                        certificate_deletion_count = count;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(HttpResponse::Ok().json(json!({ 
+        "deletedCount": res.deleted_count,
+        "certificateDeletedCount": certificate_deletion_count
+    })))
 }
 
 
@@ -309,16 +330,39 @@ pub async fn delete_deployment(path: Path<String>) -> Result<impl Responder, Api
     let oid = ObjectId::parse_str(&deployment_id)
         .map_err(|_| ApiError::bad_request(format!("invalid deployment id '{}'", deployment_id)))?;
 
-    let coll = get_collection::<bson::Document>(COLL_DEPLOYMENT).await;
+    let coll = get_collection::<DeploymentDoc>(COLL_DEPLOYMENT).await;
     let res = coll
         .delete_one(doc! { "_id": oid })
         .await
         .map_err(ApiError::db)?;
 
+    let mut certificate_deletion_count = 0;
+    if !deployment_id.is_empty() {
+        let resp = delete_deployment_certificate(web::Path::<String>::from(deployment_id.clone())).await;
+        if let Err(e) = resp {
+            warn!("Failed deleting deployment certificate for deployment '{}': {}", deployment_id, e);
+        } else {
+            // Get the response from certificate deletion to see how many were deleted
+            if let Ok(responder) = resp {
+                let r = responder.respond_to(&actix_web::test::TestRequest::default().to_http_request());
+                if let Ok(body) = r.into_body().try_into_bytes() {
+                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) {
+                        if let Some(count) = json.get("deletedCount").and_then(|v| v.as_u64()) {
+                            certificate_deletion_count = count;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if res.deleted_count == 0 {
         Err(ApiError::not_found(format!("no deployment matches id '{}'", deployment_id)))
     } else {
-        Ok(HttpResponse::Ok().json(json!({ "deletedCount": res.deleted_count })))
+        Ok(HttpResponse::Ok().json(json!({ 
+            "deletedCount": res.deleted_count,
+            "certificateDeletedCount": certificate_deletion_count
+        })))
     }
 }
 
