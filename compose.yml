@@ -1,51 +1,51 @@
   
 services:
-  orchestrator:
+  wasmiot-orchestrator:
     tty: true
+    container_name: wasmiot-orchestrator
     build:
       context: .
+      dockerfile: ./Dockerfile
       args:
         REACT_APP_API_URL: ${REACT_APP_API_URL}
-        PORT: ${PORT}
-    container_name: rust_orchestrator
     ports:
-      - "3000:3000"
-    env_file: .env
+      - "${PUBLIC_PORT}:${PUBLIC_PORT}"
+    environment:
+      - MONGO_HOST=${MONGO_HOST}
+      - MONGO_PORT=${MONGO_PORT}
+      - MONGO_ROOT_USERNAME=${MONGO_ROOT_USERNAME}
+      - MONGO_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD}
+      - PUBLIC_HOST=${PUBLIC_HOST}
+      - PUBLIC_PORT=${PUBLIC_PORT}
+      - WASMIOT_INIT_FOLDER=${WASMIOT_INIT_FOLDER}
+      - WASMIOT_CLEAR_LOGS=${WASMIOT_CLEAR_LOGS}
+      - ORCHESTRATOR_NAME=${ORCHESTRATOR_NAME}
+      - DEVICE_HEALTHCHECK_FAILED_THRESHOLD=${DEVICE_HEALTHCHECK_FAILED_THRESHOLD}
+      - DEVICE_SCAN_DURATION_S=${DEVICE_SCAN_DURATION_S}
+      - DEVICE_SCAN_INTERVAL_S=${DEVICE_SCAN_INTERVAL_S}
+      - DEVICE_HEALTH_CHECK_INTERVAL_S=${DEVICE_HEALTH_CHECK_INTERVAL_S}
+      - RUST_LOG=${RUST_LOG}
+      - AUTO_INITIALIZE=${AUTO_INITIALIZE}
+      - WASMIOT_USE_WEB_SOCKETS=${WASMIOT_USE_WEB_SOCKETS}
+      - WASMIOT_WEB_SOCKET_PORT=${WASMIOT_WEB_SOCKET_PORT}
     networks:
       default:
-        ipv4_address: 172.16.0.25
+        ipv4_address: 172.16.0.20
+    volumes:
+      - type: bind
+        source: ./instance/orchestrator/files
+        target: /app/build/files
+      - type: bind
+        source: ./instance/orchestrator/init
+        target: /app/build/init
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3300/health"]
+      test: ["CMD", "curl", "-f", "http://${PUBLIC_HOST}:${PUBLIC_PORT}/health"]
       interval: 15s
       timeout: 30s
       retries: 3
-      start_period: 15s
-
-  mongo:
-    image: mongo
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:27017:27017"
-    networks:
-      default:
-        ipv4_address: 172.16.0.2
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
-    command: mongod --port ${MONGO_PORT:-27017}
-    volumes:
-      - mongo-config:/data/configdb
-      - mongo-db:/data/db
-
-volumes:
-  mongo-config:
-  mongo-db:
+      start_period: 5s
 
 networks:
   default:
     name: wasmiot-net
-    driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: 172.16.0.0/24
+    external: true

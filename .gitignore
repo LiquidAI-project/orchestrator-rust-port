@@ -12,3 +12,4 @@ build
 # Added by cargo
 
 /target
+/instance

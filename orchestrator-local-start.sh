@@ -51,13 +51,8 @@ done
 if [ -f .env ]; then
   export $(grep -v '^#' .env | sed 's/\s*#.*//' | xargs)
 else
-  echo "❌ Error: .env file not found. Please create one before running this script."
-  exit 1
+  echo "❌ Error: .env file not found. You might want to add one if you run into issues."
 fi
-
-# Set defaults if not in .env
-export REACT_APP_API_URL="${REACT_APP_API_URL:-http://localhost:3000}"
-export PORT="${PORT:-3000}"
 
 # === Step 1: Build frontend ===
 
@@ -88,7 +83,11 @@ else
 fi
 
 # Copy other necessary files into build folder
-cp .env ./build/.env
+if [ -f .env ]; then
+  cp .env ./build/.env
+else
+  echo "❌ Error: .env file not found. You might want to add one if you run into issues."
+fi
 cp entrypoint.sh ./build/entrypoint.sh
 
 # === Step 3: Run backend ===

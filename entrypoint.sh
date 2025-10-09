@@ -6,17 +6,13 @@ set -e
 if [ -f .env ]; then
   export $(grep -v '^#' .env | sed 's/\s*#.*//' | xargs)
 else
-  echo "❌ Error: .env file not found. Please create one before running this script."
-  exit 1
+  echo "❌ Error: .env file not found. Please create one if you run into issues."
 fi
-
-# Set defaults if not in .env
-export REACT_APP_API_URL="${REACT_APP_API_URL:-http://localhost:3000}"
-export PORT="${PORT:-3000}"
 
 # Start dbus
 if ! pgrep -x dbus-daemon > /dev/null; then
   echo "🔌 Starting dbus-daemon..."
+  rm -f /run/dbus/pid # Remove stale pid file if exists
   dbus-daemon --system --fork
 else
   echo "✅ dbus-daemon already running."
@@ -29,6 +25,10 @@ if ! pgrep -x avahi-daemon > /dev/null; then
 else
   echo "✅ avahi-daemon already running."
 fi
+
+# Ensure necessary folder structure exists
+mkdir -p instance/orchestrator/files
+mkdir -p instance/orchestrator/init
 
 # Start the orchestrator
 ./orchestrator

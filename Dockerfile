@@ -15,12 +15,7 @@ RUN apt update -y \
     libavahi-client-dev \
     nodejs \
     npm
-ARG REACT_APP_API_URL
-ARG PORT
-ENV REACT_APP_API_URL=$REACT_APP_API_URL
-ENV PORT=$PORT
 COPY wasmiot-orchestrator-webgui wasmiot-orchestrator-webgui
-COPY .env .env
 COPY entrypoint.sh entrypoint.sh
 COPY orchestrator-local-start.sh orchestrator-local-start.sh
 RUN ./orchestrator-local-start.sh --no-run
