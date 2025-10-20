@@ -13,8 +13,9 @@ pub struct DeviceCommunication {
 /// CPU information of a device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpuInfo {
-    #[serde(rename="clockSpeed")]
-    pub clock_speed: HashMap<String, u64>, // name of the unit (e.g. Hz or MHZ) and its value (speed)
+    pub architecture: String,
+    #[serde(rename="clockSpeedHz")]
+    pub clock_speed_hz: u64,
     #[serde(rename="coreCount")]
     pub core_count: u32,
     #[serde(rename="humanReadableName")]
@@ -24,7 +25,8 @@ pub struct CpuInfo {
 /// Memory information of a device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryInfo {
-    pub bytes: u64 // Total memory in bytes
+    #[serde(rename="totalBytes")]
+    pub total_bytes: u64 // Total memory in bytes
 }
 
 /// Single network interface ip information.
@@ -49,6 +51,7 @@ pub struct OsInfo {
 pub struct PlatformInfo {
     pub cpu: CpuInfo,
     pub memory: MemoryInfo,
+    pub storage: HashMap<String, u64>, // List of storage devices and how much space they have in bytes
     pub network: HashMap<String, NetworkInterfaceIpInfo>, // name of the interface e.g. "eth0", followed by info on its assigned IPs
     pub system: OsInfo
 }
@@ -103,10 +106,9 @@ pub struct HealthReport {
     pub cpu_usage: f32,       // CPU usage percentage
     #[serde(rename="memoryUsage")]
     pub memory_usage: f32,    // Memory usage percentage
-    // TODO: Uncomment below once supervisor supports them
-    // #[serde(rename="diskUsage")]
-    // pub disk_usage: f32,      // Disk usage percentage
-    // pub uptime: u64,          // Uptime in seconds
+    #[serde(rename="storageUsage")]
+    pub storage_usage: HashMap<String, f32>, // Storage usage per storage device (percentage)
+    pub uptime: u64,          // Uptime in seconds
     #[serde(rename="networkUsage")]
     pub network_usage: HashMap<String, NetworkInterfaceUsage>, // Network usage per interface
 }

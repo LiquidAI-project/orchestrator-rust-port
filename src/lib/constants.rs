@@ -6,6 +6,9 @@ use std::path::PathBuf;
 use lazy_static::lazy_static;
 use const_format::concatcp;
 use std::env;
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
+use sysinfo::{System, Networks, Disks};
 
 /// Default port used when running the service.
 pub const PUBLIC_PORT: u16 = 3000;
@@ -60,3 +63,7 @@ lazy_static! {
     pub static ref DEVICE_SCAN_DURATION_S: u64 = env::var("DEVICE_SCAN_DURATION_S").ok().and_then(|u| u.parse().ok()).unwrap();
     pub static ref DEVICE_SCAN_INTERVAL_S: u64 = env::var("DEVICE_SCAN_INTERVAL_S").ok().and_then(|u| u.parse().ok()).unwrap();
 }
+
+pub(crate) static SYSTEM: Lazy<Mutex<System>> = Lazy::new(|| Mutex::new(System::new_all()));
+pub(crate) static NETWORKS: Lazy<Mutex<Networks>> = Lazy::new(|| Mutex::new(Networks::new_with_refreshed_list()));
+pub(crate) static DISKS: Lazy<Mutex<Disks>> = Lazy::new(|| Mutex::new(Disks::new_with_refreshed_list()));

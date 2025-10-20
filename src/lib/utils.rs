@@ -34,15 +34,13 @@ pub fn default_device_description() -> DeviceDescription {
     DeviceDescription {
         platform: PlatformInfo {
             cpu: CpuInfo {
-                clock_speed: {
-                    let mut m = HashMap::new();
-                    m.insert("Hz".to_string(), 0);
-                    m
-                },
+                architecture: "unknown".to_owned(),
+                clock_speed_hz: 0,
                 core_count: 0,
                 human_readable_name: String::new(),
             },
-            memory: MemoryInfo { bytes: 0 },
+            memory: MemoryInfo { total_bytes: 0 },
+            storage: HashMap::new(),
             network: HashMap::new(),
             system: OsInfo {
                 host_name: String::new(),

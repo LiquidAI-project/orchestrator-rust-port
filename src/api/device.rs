@@ -6,7 +6,7 @@
 use actix_web::{HttpResponse, Responder, web};
 use log::{info, warn, debug, error};
 use serde_json::{json, Value};
-use sysinfo::{System, Networks};
+use sysinfo::System;
 use serde::Deserialize;
 use mongodb::{bson::Bson, bson::to_bson, bson::doc, bson};
 use reqwest;
@@ -30,10 +30,23 @@ use crate::lib::mongodb::{
 };
 use crate::lib::zeroconf;
 use crate::structs::device::{
-    CpuInfo, DeviceCommunication, DeviceDescription, DeviceDoc, Health, HealthReport, MemoryInfo, NetworkInterfaceIpInfo, NetworkInterfaceUsage, OsInfo, PlatformInfo, StatusEnum, StatusLogEntry
+    CpuInfo, 
+    DeviceCommunication, 
+    DeviceDescription, 
+    DeviceDoc, 
+    Health, 
+    HealthReport, 
+    MemoryInfo, 
+    NetworkInterfaceIpInfo, 
+    NetworkInterfaceUsage, 
+    OsInfo, 
+    PlatformInfo, 
+    StatusEnum, 
+    StatusLogEntry
 };
 use crate::lib::errors::ApiError;
 use crate::lib::utils::default_device_description;
+use crate::lib::constants::{SYSTEM, NETWORKS, DISKS};
 
 /// Struct used with manual device registrations
 #[derive(Debug, Deserialize)]
@@ -46,38 +59,70 @@ pub struct ManualDeviceRegistration {
     pub properties: Option<serde_json::Value>,
 }
 
-
 /// GET /health
 /// 
 /// Returns a system-level health report for the device.
-///
-/// This endpoint provides diagnostics about:
-/// - CPU usage
-/// - Memory usage
-/// - Per-interface network traffic (bytes up/down)
 pub async fn thingi_health() -> Result<impl Responder, ApiError> {
-    let mut sys = System::new_all();
-    sys.refresh_all();
-    let cpu_usage = sys.global_cpu_usage();
-    let used = sys.used_memory() as f32;
-    let total = sys.total_memory() as f32;
-    let memory_usage = if total > 0.0 { (used / total) * 100.0 } else { 0.0 };
-    let networks = Networks::new_with_refreshed_list();
-    let mut network_usage = std::collections::HashMap::new();
-    for (if_name, data) in networks.iter() {
-        network_usage.insert(
-            if_name.clone(),
-            NetworkInterfaceUsage {
-                down_bytes: data.total_received(),
-                up_bytes: data.total_transmitted(),
-            },
-        );
-    }
+
+    // Get system info
+    let (cpu_usage, memory_usage, uptime) = {
+        let uptime = System::uptime();
+        let mut sys =  SYSTEM.lock();
+        sys.refresh_cpu_usage();
+        sys.refresh_memory();
+        let cpu = sys.global_cpu_usage() / 100.0; // Divide by hundred to convert % to 0..1
+        let used = sys.used_memory() as f32;
+        let total = sys.total_memory() as f32;
+        let mem = if total > 0.0 { used / total } else { 0.0 };
+        (cpu, mem, uptime)
+    };
+
+    // Get network info, and handle possible poisoned mutex by reinitializing
+    let network_usage = {
+        let mut networks =  NETWORKS.lock();
+        networks.refresh(true);
+        let mut network_usage = std::collections::HashMap::new();
+        for (if_name, data) in networks.iter() {
+            network_usage.insert(
+                if_name.clone(),
+                NetworkInterfaceUsage {
+                    down_bytes: data.total_received(),
+                    up_bytes: data.total_transmitted(),
+                },
+            );
+        }
+        network_usage
+    };
+
+    // Get disk info
+    let storage_usage = {
+        let mut disks =  DISKS.lock();
+        disks.refresh(true);
+        let disk_list = disks.list();
+        let mut storage_usage = std::collections::HashMap::new();
+        for disk in disk_list.iter() {
+            let disk_name = disk.name();
+            let disk_total_bytes = disk.total_space();
+            let disk_available_bytes = disk.available_space();
+            let used_percentage = if disk_total_bytes > 0 {
+                (disk_total_bytes - disk_available_bytes) as f32 / disk_total_bytes as f32
+            } else {
+                0.0
+            };
+            storage_usage.insert(
+                disk_name.to_string_lossy().to_string(),
+                used_percentage
+            );
+        }
+        storage_usage
+    };
 
     let report = HealthReport {
         cpu_usage,
         memory_usage,
         network_usage,
+        uptime,
+        storage_usage
     };
 
     debug!("✅ Orchestrator health check done");
@@ -132,43 +177,63 @@ pub fn get_wot_td() -> Value {
 ///
 /// This data is used in the WasmIoT device description function.
 pub fn get_device_platform_info() -> PlatformInfo {
-    let mut sys = System::new_all();
-    sys.refresh_all();
 
-    let memory_bytes = sys.total_memory();
 
-    let cpu_name = sys.cpus()[0].brand().to_string();
-    let clock_speed_hz = sys.cpus()[0].frequency() as u64 * 1_000_000;
-    let mut clock_speed: HashMap<String, u64> = HashMap::new();
-    clock_speed.insert("Hz".to_string(), clock_speed_hz);
-    let core_count = sys.cpus().len();
-    
-    let system_name = System::name().unwrap_or_default();
-    let system_kernel = System::kernel_version().unwrap_or_default();
-    let system_os = System::os_version().unwrap_or_default();
-    let system_host = System::host_name().unwrap_or_default();
+    let (memory_bytes, cpu_name, cpu_architecture, clock_speed_hz, core_count,
+         system_name, system_kernel, system_os, system_host) = {
+        let mut sys =  SYSTEM.lock();
+        sys.refresh_all();
+        sys.refresh_cpu_all();
+        sys.refresh_memory();
 
-    let networks = Networks::new_with_refreshed_list();
-    let mut network_map: HashMap<String, NetworkInterfaceIpInfo> = HashMap::new();
-    for (if_name, data) in networks.iter() {
-        let ip_info: Vec<String> = data
-            .ip_networks()
+        let mem_bytes = sys.total_memory();
+
+        let cpu0 = &sys.cpus()[0];
+        let cpu_name = cpu0.brand().to_string();
+        let clock_speed_hz = cpu0.frequency() as u64 * 1_000_000;
+        let core_count = sys.cpus().len();
+
+        let system_name   = System::name().unwrap_or_default();
+        let system_kernel = System::kernel_version().unwrap_or_default();
+        let system_os     = System::os_version().unwrap_or_default();
+        let system_host   = System::host_name().unwrap_or_default();
+        let cpu_arch      = System::cpu_arch();
+
+        (mem_bytes, cpu_name, cpu_arch, clock_speed_hz, core_count,
+            system_name, system_kernel, system_os, system_host)
+    };
+
+    let network_map: HashMap<String, NetworkInterfaceIpInfo> = {
+        let mut networks = NETWORKS.lock();
+        networks.refresh(true);
+        networks
             .iter()
-            .map(|ip| ip.to_string())
-            .collect();
-        network_map.insert(
-            if_name.clone(),
-            NetworkInterfaceIpInfo { ip_info },
-        );
-    }
+            .map(|(if_name, data)| {
+                let ips: Vec<String> = data.ip_networks().iter().map(|ip| ip.to_string()).collect();
+                (if_name.clone(), NetworkInterfaceIpInfo { ip_info: ips })
+            })
+            .collect()
+    };
+
+    let storage: HashMap<String, u64> = {
+        let mut disks = DISKS.lock();
+        disks.refresh(true);
+        disks
+            .list()
+            .iter()
+            .map(|d| (d.name().to_string_lossy().to_string(), d.total_space()))
+            .collect()
+    };
 
     PlatformInfo {
         cpu: CpuInfo {
-            clock_speed,
+            architecture: cpu_architecture,
+            clock_speed_hz,
             core_count: core_count as u32,
             human_readable_name: cpu_name,
         },
-        memory: MemoryInfo { bytes: memory_bytes },
+        memory: MemoryInfo { total_bytes: memory_bytes },
+        storage,
         network: network_map,
         system: OsInfo {
             host_name: system_host,
