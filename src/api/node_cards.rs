@@ -43,15 +43,22 @@ pub async fn create_node_card(card: web::Json<Value>) -> Result<impl Responder, 
         date_received: Utc::now(),
     };
 
-    // Save the new card to MongoDB
+    // Save the new card to MongoDB. Replace if entry with same nodeid exists already.
     let collection = get_collection::<NodeCard>(COLL_NODE_CARDS).await;
-    match collection.insert_one(&node_card).await {
-        Ok(_) => Ok(HttpResponse::Ok().json(json!({ "message": "Node card received and saved", "nodeCard": node_card }))),
+    
+    let filter = doc! { "nodeid": &node_card.nodeid };
+
+    match collection.find_one_and_replace(filter, &node_card).upsert(true).await {
+        Ok(_) => Ok(HttpResponse::Ok().json(json!({
+            "message": "Node card saved (created or updated)",
+            "nodeCard": node_card
+        }))),
         Err(e) => {
-            error!("Error creating node card: {}", e);
-            Err(ApiError::internal_error("Error creating Node card"))
+            error!("Error creating/updating node card: {}", e);
+            Err(ApiError::internal_error("Error creating/updating Node card"))
         }
     }
+
 }
 
 

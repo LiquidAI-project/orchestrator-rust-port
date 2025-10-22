@@ -86,13 +86,20 @@ pub async fn create_data_source_card(card: web::Json<Value>) -> Result<impl Resp
         date_received: Utc::now(),
     };
     let collection = get_collection::<DatasourceCard>(COLL_DATASOURCE_CARDS).await;
-    match collection.insert_one(&doc).await {
+    
+    let filter = doc! { 
+        "nodeid": &doc.nodeid, 
+        "type": &doc.r#type
+    };
+
+    match collection.find_one_and_replace(filter, &doc).upsert(true).await {
         Ok(_) => Ok(HttpResponse::Ok().json(serde_json::json!({
-            "message": "Datasourcecard received and saved"
+            "message": "Datasource card saved (created or updated)",
+            "datasourceCard": doc
         }))),
         Err(e) => {
-            error!("Error creating datasourcecard: {}", e);
-            Err(ApiError::internal_error("Error creating datasourcecard"))
+            error!("Error creating/updating datasource card: {}", e);
+            Err(ApiError::internal_error("Error creating/updating Datasource card"))
         }
     }
 }
