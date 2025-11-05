@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use mongodb::bson::oid::ObjectId;
 use mongodb::bson::doc;
 use serde_json;
@@ -28,9 +28,11 @@ use crate::structs::module::{
 };
 use crate::structs::deployment::{
     DeploymentDoc,
-    DeploymentNode,
-    Instruction,
+    // DeploymentNode,// TODO: Replaced with Step (has new stuff)
+    Step,
+    // Instruction, // TODO: Replaced with Instructions
     Instructions,
+    // Instructions, // TODO: Replaced with nothing it seems
     RequestBody,
     Endpoint,
     OperationRequest,
@@ -42,7 +44,8 @@ use crate::structs::deployment::{
     MultipartMediaType,
     SchemaObject,
     SchemaProperty,
-    SequenceStep
+    // SequenceStep // TODO: Removed as redundant, now under fullManifest/sequence (with extra stuff)
+    FullManifest,
 };
 use crate::structs::openapi::{
     OpenApiPathItemObject,
@@ -108,12 +111,12 @@ pub enum SolveResult {
 }
 
 
+// TODO: This needs more thought, is it necessary, and are the changes i made correct.
 /// The full deployment solution that is stored in the deployment document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSolutionResult {
     #[serde(rename = "fullManifest")]
-    pub full_manifest: HashMap<String, DeploymentNode>,
-    pub sequence: Vec<SequenceStep>,
+    pub full_manifest: FullManifest,
 }
 
 
@@ -161,6 +164,8 @@ pub async fn get_deployments() -> Result<impl Responder, ApiError> {
 /// specifically that each step has defined a module and a function.
 /// Device step can be empty to indicate that the orchestrator should pick
 /// the suitable device.
+/// NOTE: This checks the sequence sent from the UI (or other client), before
+/// starting to create the actual deployment based on it.
 fn validate_sequence(manifest: &Sequence) -> Result<(), String> {
     if manifest.name.is_empty() {
         return Err("manifest must have a name".into());
@@ -366,7 +371,7 @@ pub async fn delete_deployment(path: Path<String>) -> Result<impl Responder, Api
     }
 }
 
-
+// TODO: Fix the below function once UI actually uses this function.
 /// PUT /file/manifest/{deployment_id}
 /// 
 /// Endpoint for updating an existing deployment. Requires that a deployment exists that has
@@ -375,86 +380,87 @@ pub async fn update_deployment(
     path: Path<String>,
     body: web::Json<Sequence>,
 ) -> Result<impl Responder, ApiError> {
-    let deployment_id = path.into_inner();
-    let oid = ObjectId::parse_str(&deployment_id)
-        .map_err(|_| ApiError::bad_request(format!("invalid deployment id '{}'", deployment_id)))?;
+    // let deployment_id = path.into_inner();
+    // let oid = ObjectId::parse_str(&deployment_id)
+    //     .map_err(|_| ApiError::bad_request(format!("invalid deployment id '{}'", deployment_id)))?;
 
-    let coll = get_collection::<bson::Document>(COLL_DEPLOYMENT).await;
+    // let coll = get_collection::<bson::Document>(COLL_DEPLOYMENT).await;
 
-    let Some(old_raw) = coll
-        .find_one(doc! { "_id": &oid })
-        .await
-        .map_err(ApiError::db)?
-    else {
-        return Err(ApiError::not_found(format!(
-            "no deployment matches ID '{}'",
-            deployment_id
-        )));
-    };
+    // let Some(old_raw) = coll
+    //     .find_one(doc! { "_id": &oid })
+    //     .await
+    //     .map_err(ApiError::db)?
+    // else {
+    //     return Err(ApiError::not_found(format!(
+    //         "no deployment matches ID '{}'",
+    //         deployment_id
+    //     )));
+    // };
 
-    let was_active = old_raw.get_bool("active").unwrap_or(false);
-    let old_name = old_raw
-        .get_str("name")
-        .unwrap_or("")
-        .to_string();
-    let mut new_manifest = body.into_inner();
-    new_manifest.id = Some(oid.to_hex());
+    // let was_active = old_raw.get_bool("active").unwrap_or(false);
+    // let old_name = old_raw
+    //     .get_str("name")
+    //     .unwrap_or("")
+    //     .to_string();
+    // let mut new_manifest = body.into_inner();
+    // new_manifest.id = Some(oid.to_hex());
 
-    // Get the url from which modules can be downloaded from (basically orchestrators address)
-    let (orchestrator_host, orchestrator_port) = get_listening_address();
-    let package_manager_base_url = std::env::var("PACKAGE_MANAGER_BASE_URL")
-            .unwrap_or_else(|_| format!("http://{}:{}", orchestrator_host, orchestrator_port));
+    // // Get the url from which modules can be downloaded from (basically orchestrators address)
+    // let (orchestrator_host, orchestrator_port) = get_listening_address();
+    // let package_manager_base_url = std::env::var("PACKAGE_MANAGER_BASE_URL")
+    //         .unwrap_or_else(|_| format!("http://{}:{}", orchestrator_host, orchestrator_port));
 
-    // TODO: Is this kind of filtering based on file types even necessary really?
-    let supported_file_types = SUPPORTED_FILE_TYPES.to_vec();
+    // // TODO: Is this kind of filtering based on file types even necessary really?
+    // let supported_file_types = SUPPORTED_FILE_TYPES.to_vec();
 
-    let res = solve(
-        &new_manifest,
-        true,
-        &package_manager_base_url,
-        &supported_file_types[..],
-    )
-    .await
-    .map_err(|e| {
-        error!("Failed updating manifest for deployment: {e}");
-        ApiError::internal_error(e)
-    })?;
+    // let res = solve(
+    //     &new_manifest,
+    //     true,
+    //     &package_manager_base_url,
+    //     &supported_file_types[..],
+    // )
+    // .await
+    // .map_err(|e| {
+    //     error!("Failed updating manifest for deployment: {e}");
+    //     ApiError::internal_error(e)
+    // })?;
 
-    let solution = match res {
-        SolveResult::Solution(s) => s,
-        _ => return Err(ApiError::internal_error("unexpected solver result (expected Solution)")),
-    };
+    // let solution = match res {
+    //     SolveResult::Solution(s) => s,
+    //     _ => return Err(ApiError::internal_error("unexpected solver result (expected Solution)")),
+    // };
 
-    // If the deployment was active, re-deploy it on the targeted devices.
-    if was_active {
+    // // If the deployment was active, re-deploy it on the targeted devices.
+    // if was_active {
 
-        let updated_deployment_doc = DeploymentDoc {
-            id: Some(oid.clone()),
-            name: old_name,
-            sequence: solution.sequence,
-            validation_error: None,
-            full_manifest: solution.full_manifest,
-            active: Some(true),
-        };
+    //     let updated_deployment_doc = DeploymentDoc {
+    //         id: Some(oid.clone()),
+    //         name: old_name,
+    //         sequence: solution.sequence,
+    //         validation_error: None,
+    //         full_manifest: solution.full_manifest,
+    //         active: Some(true),
+    //     };
 
-        match deploy(&updated_deployment_doc).await {
-            Ok(device_responses) => {
-                coll.update_one(
-                        doc! { "_id": &oid },
-                        doc! { "$set": { "active": true } },
-                    )
-                    .await
-                    .map_err(ApiError::db)?;
+    //     match deploy(&updated_deployment_doc).await {
+    //         Ok(device_responses) => {
+    //             coll.update_one(
+    //                     doc! { "_id": &oid },
+    //                     doc! { "$set": { "active": true } },
+    //                 )
+    //                 .await
+    //                 .map_err(ApiError::db)?;
 
-                Ok(HttpResponse::Ok().json(json!({ "deviceResponses": device_responses })))
-            }
-            Err(err) => {
-                Err(err)
-            }
-        }
-    } else {
-        Ok(HttpResponse::NoContent().finish())
-    }
+    //             Ok(HttpResponse::Ok().json(json!({ "deviceResponses": device_responses })))
+    //         }
+    //         Err(err) => {
+    //             Err(err)
+    //         }
+    //     }
+    // } else {
+    //     Ok(HttpResponse::NoContent().finish())
+    // }
+    Ok(HttpResponse::NotImplemented().finish())
 }
 
 
@@ -567,8 +573,8 @@ pub async fn solve(
 }
 
 
-/// Helper function that sends the deployment document to given devices.
-pub async fn message_device_deploy(device: &DeviceDoc, manifest: &DeploymentNode) -> Result<Value, String> {
+/// Helper function that sends the deployment document to a given device
+pub async fn message_device_deploy(device: &DeviceDoc, manifest: &DeploymentDoc) -> Result<Value, String> {
     let ip = device
         .communication
         .addresses
@@ -583,7 +589,7 @@ pub async fn message_device_deploy(device: &DeviceDoc, manifest: &DeploymentNode
         .map_err(|e| format!("http client build error for device '{}': {e}", device.name))?;
 
     let mut payload = serde_json::to_value(manifest)
-        .map_err(|e| format!("serialize manifest for device '{}': {e}", device.name))?;
+        .map_err(|e| format!("Failed to serialize manifest for device '{}': {e}", device.name))?;
     crate::lib::utils::normalize_object_ids(&mut payload);
 
     let resp = client
@@ -616,19 +622,48 @@ pub async fn message_device_deploy(device: &DeviceDoc, manifest: &DeploymentNode
 
 /// Send the deployment docs to devices asynchronously
 pub async fn deploy(deployment: &DeploymentDoc) -> Result<HashMap<String, Value>, ApiError> {
-    let deployment_solution = &deployment.full_manifest;
+    // let deployment_solution = &deployment.full_manifest;
 
-    let mut tasks = Vec::with_capacity(deployment_solution.len());
+    // Collect all unique device ids from the deployment solution
+    let mut unique_device_ids: BTreeSet<ObjectId> = BTreeSet::new();
+    for step in &deployment.full_manifest.sequence {
+        unique_device_ids.insert(step.device_id);
+    }
 
-    for (device_id_hex, manifest) in deployment_solution.iter() {
-        let oid = ObjectId::parse_str(device_id_hex)
-            .map_err(|e| ApiError::bad_request(format!("bad device id '{}': {e}", device_id_hex)))?;
+    if unique_device_ids.is_empty() {
+        return Err(ApiError::bad_request(
+            "Failed to deploy: no devices found in fullManifest.sequence",
+        ));
+    }
+
+    // Serialize the deployment doc, and later add device ids to it for each device (under "myId" key)
+    let deployment_json_without_device_id = serde_json::to_value(deployment)
+        .map_err(|e| ApiError::internal_error(format!("failed to serialize DeploymentDoc: {e}")))?;
+
+    let mut tasks = Vec::with_capacity(unique_device_ids.len());
+
+    for oid in unique_device_ids {
+        let device_id_hex = oid.to_hex();
 
         let dev_opt = find_one::<DeviceDoc>(COLL_DEVICE, doc! { "_id": &oid })
             .await
-            .map_err(|e| ApiError::db(format!("device.findOne error for '{}': {e}", device_id_hex)))?;
+            .map_err(|e| ApiError::db(format!("Failed to deploy, database error when fetching device with id '{}'. Error: {e}", device_id_hex)))?;
 
-        let device = dev_opt.ok_or_else(|| ApiError::not_found(format!("device not found: {}", device_id_hex)))?;
+        let device = dev_opt.ok_or_else(|| ApiError::not_found(format!("Failed to deploy: device with id: '{}' not found.", device_id_hex)))?;
+        
+        // Add the device id to the deployment json
+        let mut per_device_json = base_json.clone();
+        match per_device_json {
+            Value::Object(ref mut obj) => {
+                obj.insert("myId".to_string(), Value::String(device_id_hex.clone()));
+            }
+            _ => {
+                return Err(ApiError::internal_error(
+                    "Failed to deploy: DeploymentDoc did not serialize to a JSON object",
+                ));
+            }
+        }
+        
         let manifest_clone = manifest.clone();
         let device_id_for_map = device_id_hex.clone();
 

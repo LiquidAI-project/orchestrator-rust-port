@@ -352,6 +352,10 @@ pub async fn schedule(
 
     let mut req = client.request(method.clone(), url);
 
+    // Set the X-Chain-Step header to 0, to indicate to supervisor that it needs to 
+    // execute the first step.
+    req = req.header("X-Chain-Step", "0");
+
     if method != Method::GET && method != Method::HEAD {
         if request.request_body.is_some() {
             let mut form = Form::new();
