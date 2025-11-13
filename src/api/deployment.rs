@@ -1165,14 +1165,33 @@ pub fn mounts_for(
 
 
 /// Helper function that checks if a given device provides all the required 
-/// supervisor interfaces for a given module.
+/// supervisor interfaces for a given module, printing any that are missing.
 fn device_satisfies_module(d: &DeviceDoc, m: &ModuleDoc) -> bool {
-    m.requirements.iter().all(|r|
-        d.description
-            .supervisor_interfaces
-            .iter()
-            .any(|supervisor_interface| supervisor_interface == &r.name)
-    )
+    // Collect missing interface names
+    let missing: Vec<_> = m.requirements.iter()
+        .filter_map(|r| {
+            let found = d
+                .description
+                .supervisor_interfaces
+                .iter()
+                .any(|iface| iface == &r.name);
+            if !found {
+                Some(r.name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !missing.is_empty() {
+        error!(
+            "Device '{}' is missing required supervisor interfaces for module '{}': {:?}",
+            d.name, m.name, missing
+        );
+        false
+    } else {
+        true
+    }
 }
 
 
