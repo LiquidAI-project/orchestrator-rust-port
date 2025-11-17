@@ -33,7 +33,9 @@ pub struct MemoryInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkInterfaceIpInfo {
     #[serde(rename="ipInfo")]
-    pub ip_info: Vec<String> // List of IP addresses assigned to the interface, for example "192.168.1.1/24"
+    pub ip_info: Vec<String>, // List of IP addresses assigned to the interface, for example "192.168.1.1/24"
+    #[serde(rename = "macAddress", skip_serializing_if = "Option::is_none")]
+    pub mac_address: Option<String>
 }
 
 /// Information on the platforms os and kernel

@@ -210,7 +210,14 @@ pub fn get_device_platform_info() -> PlatformInfo {
             .iter()
             .map(|(if_name, data)| {
                 let ips: Vec<String> = data.ip_networks().iter().map(|ip| ip.to_string()).collect();
-                (if_name.clone(), NetworkInterfaceIpInfo { ip_info: ips })
+                let mac_addr = data.mac_address().to_string().to_lowercase();
+                (
+                    if_name.clone(),
+                    NetworkInterfaceIpInfo {
+                        ip_info: ips,
+                        mac_address: Some(mac_addr),
+                    },
+                )
             })
             .collect()
     };
