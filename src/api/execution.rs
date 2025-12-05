@@ -378,60 +378,19 @@ pub async fn schedule(
 }
 
 
-/// Get the starting endpoint from a Deployment
-/// 
-/// Returns (base_url, path, method, openapi_request)
-/// - base_url: Url (scheme + host + port), for example http://example.com
-/// - path: String (the path template for the endpoint), for example /{deployment_id}/modules/{module_name}/{function_name}
-/// - method: String (the HTTP method for the endpoint), for example 'get' or 'post'
-/// - a list of openapi parameter objects, for example {'parameters': [OpenApiParameterEnum]}
 fn get_start_endpoint(
     deployment: &DeploymentDoc,
 ) -> Result<(Url, String, String, OperationRequest), String> {
-
-    // Get the first device under the "sequence" key of a deployment
-    let start = deployment
+    // Get the first step in the full_manifest sequence
+    let start_step = deployment
+        .full_manifest
         .sequence
         .get(0)
         .ok_or_else(|| "Deployment had an empty sequence".to_string())?;
 
-    // Find the corresponding entry under "fullManifest" key
-    let device_hex = start.device.to_hex();
-    let node = deployment
-        .full_manifest
-        .get(&device_hex)
-        .ok_or_else(|| format!("device '{}' not found in fullManifest", device_hex))?;
+    let ep = &start_step.endpoint;
 
-    // Find the name of the starting module. The modules are in a list, so find the 
-    // module in the list with an id that matches the module in the first item of the 
-    // sequence (first step of this function)
-    let module_name = node
-        .modules
-        .iter()
-        .find(|m| m.id == start.module)
-        .map(|m| m.name.clone())
-        .ok_or_else(|| {
-            format!(
-                "module '{}' not found on device '{}'",
-                start.module.to_hex(),
-                device_hex
-            )
-        })?;
-
-    // Get the endpoint information for the starting module/function. The endpoints
-    // are stored as a map of module name -> function name -> endpoint information.
-    let ep = node
-        .endpoints
-        .get(&module_name)
-        .and_then(|m| m.get(&start.func))
-        .ok_or_else(|| {
-            format!(
-                "endpoint not found for module '{}' func '{}' on device '{}'",
-                module_name, start.func, device_hex
-            )
-        })?;
-
-    // Parse the url from the endpoint information that was just fetched
+    // Parse the base URL (scheme + host + port) from the endpoint
     let url = Url::parse(&ep.url)
         .map_err(|e| format!("invalid endpoint url '{}': {e}", ep.url))?;
 

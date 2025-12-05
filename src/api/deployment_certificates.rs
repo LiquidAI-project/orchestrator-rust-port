@@ -48,15 +48,16 @@ pub async fn validate_deployment_solution(
     let mut logs: Vec<ValidationLog> = Vec::new();
 
     // Validate each step in the deployment separately
-    for step in &solution.sequence {
-        let device_hex = step.device.to_hex();
-        let module_hex = step.module.to_hex();
+    for step in &solution.full_manifest.sequence {
+        let device_hex = step.device_id.to_hex();
+        let module_id = step.module.id;
+        let module_hex = step.module.id.to_hex();
 
         // Create log to store the validation results and reasoning for this step
         let mut log = ValidationLog {
             device: device_hex.clone(),
             module: module_hex.clone(),
-            func: step.func.clone(),
+            func: step.function_name.clone(),
             node_zone: "none".into(),
             module_risk: "none".into(),
             input_risk: "none".into(),
@@ -65,12 +66,12 @@ pub async fn validate_deployment_solution(
             reasons: vec![],
         };
 
-        if step.func.is_empty() {
-            return Err("Device, module, or function missing in the step.".into());
+        if step.function_name.is_empty() {
+            return Err("Function missing in the step.".into());
         }
 
         // Load module card and node card, and check that they exist and have valid format
-        let nodecard = find_one::<NodeCard>(COLL_NODE_CARDS, doc! { "nodeid": step.device })
+        let nodecard = find_one::<NodeCard>(COLL_NODE_CARDS, doc! { "nodeid": &device_hex })
             .await
             .map_err(|e| format!("nodecards.findOne error: {e}"))?;
         if nodecard.is_none() {
@@ -82,8 +83,9 @@ pub async fn validate_deployment_solution(
         }
         let nodecard = nodecard.unwrap();
         log.node_zone = nodecard.zone.clone();
+
         let modulecard =
-            find_one::<ModuleCard>(COLL_MODULE_CARDS, doc! { "moduleid": step.module })
+            find_one::<ModuleCard>(COLL_MODULE_CARDS, doc! { "moduleid": &module_id })
                 .await
                 .map_err(|e| format!("modulecards.findOne error: {e}"))?;
         if modulecard.is_none() {
@@ -94,6 +96,7 @@ pub async fn validate_deployment_solution(
             continue;
         }
         let modulecard = modulecard.unwrap();
+
         let risk_level_module = if modulecard.risk_level.is_empty() {
             return Err("Module card was missing risk level, failed to validate".to_string());
         } else {
@@ -129,7 +132,7 @@ pub async fn validate_deployment_solution(
         if input_type_module != "temp" {
             let ds = find_one::<DatasourceCard>(
                 COLL_DATASOURCE_CARDS,
-                doc! { "type": &input_type_module, "nodeid": step.device },
+                doc! { "type": &input_type_module, "nodeid": &step.device_id },
             )
             .await
             .map_err(|e| format!("datasourcecards.findOne error: {e}"))?;
