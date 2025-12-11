@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use mongodb::bson::oid::ObjectId;
 use mongodb::bson::doc;
 use serde_json;
@@ -28,8 +28,7 @@ use crate::structs::module::{
 };
 use crate::structs::deployment::{
     DeploymentDoc,
-    DeploymentNode,
-    Instruction,
+    Step,
     Instructions,
     RequestBody,
     Endpoint,
@@ -42,7 +41,7 @@ use crate::structs::deployment::{
     MultipartMediaType,
     SchemaObject,
     SchemaProperty,
-    SequenceStep
+    FullManifest,
 };
 use crate::structs::openapi::{
     OpenApiPathItemObject,
@@ -59,6 +58,16 @@ use crate::api::deployment_certificates::validate_deployment_solution;
 use std::time::Duration;
 use crate::lib::errors::ApiError;
 
+
+
+#[derive(Clone)]
+struct BuiltStep {
+    device_id: ObjectId,
+    module: DeviceModule,
+    func: String,
+    endpoint: Endpoint,
+    mounts: StageMounts,
+}
 
 /// One step in the deployment sequence
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,12 +117,12 @@ pub enum SolveResult {
 }
 
 
+// TODO: This needs more thought, is it necessary, and are the changes i made correct.
 /// The full deployment solution that is stored in the deployment document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateSolutionResult {
     #[serde(rename = "fullManifest")]
-    pub full_manifest: HashMap<String, DeploymentNode>,
-    pub sequence: Vec<SequenceStep>,
+    pub full_manifest: FullManifest,
 }
 
 
@@ -161,6 +170,8 @@ pub async fn get_deployments() -> Result<impl Responder, ApiError> {
 /// specifically that each step has defined a module and a function.
 /// Device step can be empty to indicate that the orchestrator should pick
 /// the suitable device.
+/// NOTE: This checks the sequence sent from the UI (or other client), before
+/// starting to create the actual deployment based on it.
 fn validate_sequence(manifest: &Sequence) -> Result<(), String> {
     if manifest.name.is_empty() {
         return Err("manifest must have a name".into());
@@ -366,95 +377,96 @@ pub async fn delete_deployment(path: Path<String>) -> Result<impl Responder, Api
     }
 }
 
-
+// TODO: Fix the below function once UI actually uses this function.
 /// PUT /file/manifest/{deployment_id}
 /// 
 /// Endpoint for updating an existing deployment. Requires that a deployment exists that has
 /// a matching id.
 pub async fn update_deployment(
-    path: Path<String>,
-    body: web::Json<Sequence>,
+    _path: Path<String>,
+    _body: web::Json<Sequence>,
 ) -> Result<impl Responder, ApiError> {
-    let deployment_id = path.into_inner();
-    let oid = ObjectId::parse_str(&deployment_id)
-        .map_err(|_| ApiError::bad_request(format!("invalid deployment id '{}'", deployment_id)))?;
+    // let deployment_id = path.into_inner();
+    // let oid = ObjectId::parse_str(&deployment_id)
+    //     .map_err(|_| ApiError::bad_request(format!("invalid deployment id '{}'", deployment_id)))?;
 
-    let coll = get_collection::<bson::Document>(COLL_DEPLOYMENT).await;
+    // let coll = get_collection::<bson::Document>(COLL_DEPLOYMENT).await;
 
-    let Some(old_raw) = coll
-        .find_one(doc! { "_id": &oid })
-        .await
-        .map_err(ApiError::db)?
-    else {
-        return Err(ApiError::not_found(format!(
-            "no deployment matches ID '{}'",
-            deployment_id
-        )));
-    };
+    // let Some(old_raw) = coll
+    //     .find_one(doc! { "_id": &oid })
+    //     .await
+    //     .map_err(ApiError::db)?
+    // else {
+    //     return Err(ApiError::not_found(format!(
+    //         "no deployment matches ID '{}'",
+    //         deployment_id
+    //     )));
+    // };
 
-    let was_active = old_raw.get_bool("active").unwrap_or(false);
-    let old_name = old_raw
-        .get_str("name")
-        .unwrap_or("")
-        .to_string();
-    let mut new_manifest = body.into_inner();
-    new_manifest.id = Some(oid.to_hex());
+    // let was_active = old_raw.get_bool("active").unwrap_or(false);
+    // let old_name = old_raw
+    //     .get_str("name")
+    //     .unwrap_or("")
+    //     .to_string();
+    // let mut new_manifest = body.into_inner();
+    // new_manifest.id = Some(oid.to_hex());
 
-    // Get the url from which modules can be downloaded from (basically orchestrators address)
-    let (orchestrator_host, orchestrator_port) = get_listening_address();
-    let package_manager_base_url = std::env::var("PACKAGE_MANAGER_BASE_URL")
-            .unwrap_or_else(|_| format!("http://{}:{}", orchestrator_host, orchestrator_port));
+    // // Get the url from which modules can be downloaded from (basically orchestrators address)
+    // let (orchestrator_host, orchestrator_port) = get_listening_address();
+    // let package_manager_base_url = std::env::var("PACKAGE_MANAGER_BASE_URL")
+    //         .unwrap_or_else(|_| format!("http://{}:{}", orchestrator_host, orchestrator_port));
 
-    // TODO: Is this kind of filtering based on file types even necessary really?
-    let supported_file_types = SUPPORTED_FILE_TYPES.to_vec();
+    // // TODO: Is this kind of filtering based on file types even necessary really?
+    // let supported_file_types = SUPPORTED_FILE_TYPES.to_vec();
 
-    let res = solve(
-        &new_manifest,
-        true,
-        &package_manager_base_url,
-        &supported_file_types[..],
-    )
-    .await
-    .map_err(|e| {
-        error!("Failed updating manifest for deployment: {e}");
-        ApiError::internal_error(e)
-    })?;
+    // let res = solve(
+    //     &new_manifest,
+    //     true,
+    //     &package_manager_base_url,
+    //     &supported_file_types[..],
+    // )
+    // .await
+    // .map_err(|e| {
+    //     error!("Failed updating manifest for deployment: {e}");
+    //     ApiError::internal_error(e)
+    // })?;
 
-    let solution = match res {
-        SolveResult::Solution(s) => s,
-        _ => return Err(ApiError::internal_error("unexpected solver result (expected Solution)")),
-    };
+    // let solution = match res {
+    //     SolveResult::Solution(s) => s,
+    //     _ => return Err(ApiError::internal_error("unexpected solver result (expected Solution)")),
+    // };
 
-    // If the deployment was active, re-deploy it on the targeted devices.
-    if was_active {
+    // // If the deployment was active, re-deploy it on the targeted devices.
+    // if was_active {
 
-        let updated_deployment_doc = DeploymentDoc {
-            id: Some(oid.clone()),
-            name: old_name,
-            sequence: solution.sequence,
-            validation_error: None,
-            full_manifest: solution.full_manifest,
-            active: Some(true),
-        };
+    //     let updated_deployment_doc = DeploymentDoc {
+    //         id: Some(oid.clone()),
+    //         name: old_name,
+    //         sequence: solution.sequence,
+    //         validation_error: None,
+    //         full_manifest: solution.full_manifest,
+    //         active: Some(true),
+    //     };
 
-        match deploy(&updated_deployment_doc).await {
-            Ok(device_responses) => {
-                coll.update_one(
-                        doc! { "_id": &oid },
-                        doc! { "$set": { "active": true } },
-                    )
-                    .await
-                    .map_err(ApiError::db)?;
+    //     match deploy(&updated_deployment_doc).await {
+    //         Ok(device_responses) => {
+    //             coll.update_one(
+    //                     doc! { "_id": &oid },
+    //                     doc! { "$set": { "active": true } },
+    //                 )
+    //                 .await
+    //                 .map_err(ApiError::db)?;
 
-                Ok(HttpResponse::Ok().json(json!({ "deviceResponses": device_responses })))
-            }
-            Err(err) => {
-                Err(err)
-            }
-        }
-    } else {
-        Ok(HttpResponse::NoContent().finish())
-    }
+    //             Ok(HttpResponse::Ok().json(json!({ "deviceResponses": device_responses })))
+    //         }
+    //         Err(err) => {
+    //             Err(err)
+    //         }
+    //     }
+    // } else {
+    //     Ok(HttpResponse::NoContent().finish())
+    // }
+    Ok(HttpResponse::NotImplemented().finish())
 }
 
 
@@ -567,28 +579,30 @@ pub async fn solve(
 }
 
 
-/// Helper function that sends the deployment document to given devices.
-pub async fn message_device_deploy(device: &DeviceDoc, manifest: &DeploymentNode) -> Result<Value, String> {
+/// Helper function that sends the deployment JSON to a given device
+pub async fn message_device_deploy(
+    device: DeviceDoc,
+    manifest_json: Value,
+) -> Result<Value, String> {
     let ip = device
         .communication
         .addresses
         .get(0)
         .map(|s| s.as_str())
         .ok_or_else(|| format!("device '{}' has no ip address", device.name))?;
-    let url = format!("http://{}:{}{}", ip, device.communication.port, "/deploy");
+    let url = format!(
+        "http://{}:{}{}",
+        ip, device.communication.port, "/deploy"
+    );
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| format!("http client build error for device '{}': {e}", device.name))?;
 
-    let mut payload = serde_json::to_value(manifest)
-        .map_err(|e| format!("serialize manifest for device '{}': {e}", device.name))?;
-    crate::lib::utils::normalize_object_ids(&mut payload);
-
     let resp = client
         .post(url)
-        .json(&payload)
+        .json(&manifest_json)
         .send()
         .await
         .map_err(|e| format!("request error to device '{}': {e}", device.name))?;
@@ -610,30 +624,72 @@ pub async fn message_device_deploy(device: &DeviceDoc, manifest: &DeploymentNode
         ));
     }
 
-    Ok(serde_json::from_slice(&bytes).unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).to_string())))
+    Ok(
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).to_string())),
+    )
 }
+
 
 
 /// Send the deployment docs to devices asynchronously
 pub async fn deploy(deployment: &DeploymentDoc) -> Result<HashMap<String, Value>, ApiError> {
-    let deployment_solution = &deployment.full_manifest;
+    // Collect all unique device ids from the deployment solution
+    let mut unique_device_ids: BTreeSet<ObjectId> = BTreeSet::new();
+    for step in &deployment.full_manifest.sequence {
+        unique_device_ids.insert(step.device_id);
+    }
 
-    let mut tasks = Vec::with_capacity(deployment_solution.len());
+    if unique_device_ids.is_empty() {
+        return Err(ApiError::bad_request(
+            "Failed to deploy: no devices found in fullManifest.sequence",
+        ));
+    }
 
-    for (device_id_hex, manifest) in deployment_solution.iter() {
-        let oid = ObjectId::parse_str(device_id_hex)
-            .map_err(|e| ApiError::bad_request(format!("bad device id '{}': {e}", device_id_hex)))?;
+    // Serialize the deployment doc to JSON once, normalize object IDs
+    let mut base_json = serde_json::to_value(deployment)
+        .map_err(|e| ApiError::internal_error(format!("failed to serialize DeploymentDoc: {e}")))?;
+    crate::lib::utils::normalize_object_ids(&mut base_json);
+
+    let mut tasks = Vec::with_capacity(unique_device_ids.len());
+
+    for oid in unique_device_ids {
+        let device_id_hex = oid.to_hex();
 
         let dev_opt = find_one::<DeviceDoc>(COLL_DEVICE, doc! { "_id": &oid })
             .await
-            .map_err(|e| ApiError::db(format!("device.findOne error for '{}': {e}", device_id_hex)))?;
+            .map_err(|e| {
+                ApiError::db(format!(
+                    "Failed to deploy, database error when fetching device with id '{}'. Error: {e}",
+                    device_id_hex
+                ))
+            })?;
 
-        let device = dev_opt.ok_or_else(|| ApiError::not_found(format!("device not found: {}", device_id_hex)))?;
-        let manifest_clone = manifest.clone();
+        let device = dev_opt.ok_or_else(|| {
+            ApiError::not_found(format!(
+                "Failed to deploy: device with id: '{}' not found.",
+                device_id_hex
+            ))
+        })?;
+
+        // Add the device id to the deployment json under "myId"
+        let mut per_device_json = base_json.clone();
+        match per_device_json {
+            Value::Object(ref mut obj) => {
+                obj.insert("myId".to_string(), Value::String(device_id_hex.clone()));
+            }
+            _ => {
+                return Err(ApiError::internal_error(
+                    "Failed to deploy: DeploymentDoc did not serialize to a JSON object",
+                ));
+            }
+        }
+
+        let device_for_task = device.clone();
         let device_id_for_map = device_id_hex.clone();
 
         tasks.push(async move {
-            let res = message_device_deploy(&device, &manifest_clone).await;
+            let res = message_device_deploy(device_for_task, per_device_json).await;
             (device_id_for_map, res)
         });
     }
@@ -714,39 +770,36 @@ fn pick_single_operation<'a>(
 }
 
 
-/// Helper function that builds everything that goes under the "fullManifest" key in a deployment document
+
+/// Helper function that builds everything that goes under the "fullManifest" key
 pub fn create_solution(
     deployment_id: &ObjectId,
     sequence: &[AssignedStep],
     package_base_url: &str,
     supported_file_types: &[&str],
 ) -> Result<CreateSolutionResult, String> {
-    let mut deployments_to_devices: HashMap<String, DeploymentNode> = HashMap::new();
+    if sequence.is_empty() {
+        return Err("sequence is empty, nothing to deploy".into());
+    }
+
+    let mut built: Vec<BuiltStep> = Vec::with_capacity(sequence.len());
 
     for step in sequence {
-        let device_id_str = device_id_hex(&step.device)?;
+        let device_id = step
+            .device
+            .id
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "device missing _id".to_string())?;
 
+        let device_id_str = device_id_hex(&step.device)?;
         debug!("Creating solution, working on device: {:?}", device_id_str);
 
-        // Ensure a deployment node exists for this device. Devices are keyed by their ids.
-        let node = deployments_to_devices
-            .entry(device_id_str.clone())
-            .or_insert_with(|| DeploymentNode {
-                deployment_id: deployment_id.clone(),
-                modules: Vec::new(),
-                endpoints: HashMap::new(),
-                instructions: Instructions { modules: HashMap::new() },
-                mounts: HashMap::new(),
-            });
+        // Module metadata needed by the device (URLs from where to retrieve necessary files)
+        let module_dev_data = module_data(&step.module, package_base_url)?;
+        debug!("Generated module data for device:\n{:?}", module_dev_data);
 
-        // Add module metadata needed by the device (urls from where to retrieve necessary files)
-        let module_data_for_device = module_data(&step.module, package_base_url)?;
-        node.modules.push(module_data_for_device.clone());
-
-        debug!("Generated module data for device:\n{:?}", module_data_for_device);
-
-        // Find the openapi description of the supervisor execution path.
-        // The execution path is the path on the supervisor that you can call to execute a specific function
+        // Find the OpenAPI description for this module/function
         let func_path_key = supervisor_execution_path(&step.module.name, &step.func);
         let description_doc = step
             .module
@@ -763,43 +816,48 @@ pub fn create_solution(
                 )
             })?;
 
-        // Pick a single method (get/post etc) that has been defined for the current endpoint/path 
+        // Pick a single method (get/post/etc.)
         let (method_str, op) = pick_single_operation(path_item)?;
 
-        // Look for the "200" response. If it is not defined, return an error.
-        // TODO: If other responses need to be implemented, this part needs to change
+        // Look for the "200" response
         let resp_200 = op
             .responses
             .get("200")
             .ok_or_else(|| "Response '200' not defined".to_string())?;
 
-        // Gather information for the "response" section under the "endpoint" section
+        // Build OperationResponse (media type + schema)
         let (response_media_type, response_media) = match resp_200 {
             ResponseEnum::OpenApiResponseObject(obj) => {
-                let content = obj.content.as_ref()
+                let content = obj
+                    .content
+                    .as_ref()
                     .ok_or_else(|| "response 200 has no content".to_string())?;
-                // TODO: The content might have multiple entries, this would ignore them. They dont have that at the moment, but 
-                // if those are added some day this part needs to change.
-                let (media_type, media) = content.iter()
+                let (media_type, media) = content
+                    .iter()
                     .next()
                     .ok_or_else(|| "response 200 content is empty".to_string())?;
 
-                // Convert Option<OpenApiSchemaEnum> -> Option<OpenApiSchemaObject>
                 let schema_obj = match &media.schema {
                     Some(OpenApiSchemaEnum::OpenApiSchemaObject(s)) => Some(s.clone()),
                     Some(OpenApiSchemaEnum::OpenApiReferenceObject(r)) => {
-                        return Err(format!("response 200 schema is a $ref ({}), resolver not implemented", r.r#ref));
+                        return Err(format!(
+                            "response 200 schema is a $ref ({}), resolver not implemented",
+                            r.r#ref
+                        ));
                     }
                     None => None,
                 };
                 (media_type.clone(), schema_obj)
             }
             ResponseEnum::OpenApiReferenceObject(obj) => {
-                return Err(format!("response 200 is a $ref ({}), resolver not implemented yet", obj.r#ref));
+                return Err(format!(
+                    "response 200 is a $ref ({}), resolver not implemented yet",
+                    obj.r#ref
+                ));
             }
         };
 
-        // Get request body items if they happen to be present
+        // Request body (if any)
         let request_body_built: Option<RequestBody> = match &op.request_body {
             None => None,
             Some(RequestBodyEnum::OpenApiReferenceObject(r)) => {
@@ -809,7 +867,6 @@ pub fn create_solution(
                 ));
             }
             Some(RequestBodyEnum::OpenApiRequestBodyObject(rb)) => {
-                // TODO: Chooses the first entry. In future, if multiple are expected, change this.
                 if let Some((mt, media)) = rb.content.iter().next() {
                     let schema_obj = match &media.schema {
                         None => None,
@@ -832,9 +889,7 @@ pub fn create_solution(
             }
         };
 
-        // Get the url of the first server object.
-        // TODO: If at some point orchestrator wants to do something like support several execution paths on a supervisor etc, this
-        // part will have to change.
+        // Get server URL template and fill it with device IP/port
         let server_url_template = step
             .module
             .description
@@ -844,11 +899,12 @@ pub fn create_solution(
             .ok_or_else(|| "module.servers is missing or empty".to_string())?
             .url
             .clone();
+
         let url = fill_server_url(&server_url_template, &step.device);
         let path = supervisor_execution_path(&step.module.name, &step.func)
             .replace("{deployment}", &deployment_id.to_hex());
 
-        // Clear out the enum things from some openapi structs.
+        // Flatten parameters
         let mut parameter_list = Vec::new();
         if let Some(params) = &op.parameters {
             for p in params {
@@ -864,7 +920,6 @@ pub fn create_solution(
             }
         }
 
-        // Build the endpoint from all information gathered so far
         let endpoint = Endpoint {
             url,
             path,
@@ -881,98 +936,45 @@ pub fn create_solution(
 
         debug!("Endpoint constructed:\n{:?}", endpoint);
 
+        // Build stage mounts for this step
         let stage_mounts = mounts_for(&step.module, &step.func, &endpoint, supported_file_types)?;
-        node.endpoints
-            .entry(step.module.name.clone())
-            .or_default()
-            .insert(step.func.clone(), endpoint.clone());
 
-        node.mounts
-            .entry(step.module.name.clone())
-            .or_default()
-            .insert(step.func.clone(), stage_mounts);
+        built.push(BuiltStep {
+            device_id,
+            module: module_dev_data.clone(),
+            func: step.func.clone(),
+            endpoint,
+            mounts: stage_mounts,
+        });
     }
 
-    if let Some((dev_id, _node)) = deployments_to_devices
-        .iter()
-        .find(|(_, n)| n.endpoints.is_empty())
-    {
-        return Err(format!("no endpoints defined for device '{}'", dev_id));
-    }
-
-    for i in 0..sequence.len() {
-        let curr = &sequence[i];
-        let device_id_str = device_id_hex(&curr.device)?;
-        let module_name = &curr.module.name;
-        let func_name = &curr.func;
-
-        let source_endpoint = deployments_to_devices
-            .get(&device_id_str)
-            .and_then(|n| n.endpoints.get(module_name))
-            .and_then(|m| m.get(func_name))
-            .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "source endpoint missing for device {}, module {}, func {}",
-                    device_id_str, module_name, func_name
-                )
-            })?;
-
-        let forward_endpoint = if i + 1 < sequence.len() {
-            let next = &sequence[i + 1];
-            let fwd_dev_id = device_id_hex(&next.device)?;
-            deployments_to_devices
-                .get(&fwd_dev_id)
-                .and_then(|n| n.endpoints.get(&next.module.name))
-                .and_then(|m| m.get(&next.func))
-                .cloned()
+    let mut steps_vec: Vec<Step> = Vec::with_capacity(built.len());
+    for i in 0..built.len() {
+        let curr = &built[i];
+        let to = if i + 1 < built.len() {
+            Some(built[i + 1].endpoint.clone())
         } else {
             None
         };
 
-        let node = deployments_to_devices
-            .get_mut(&device_id_str)
-            .expect("device node must exist when building instructions");
+        let instructions = Instructions {
+            from: curr.endpoint.clone(),
+            to,
+        };
 
-        node.instructions
-            .modules
-            .entry(module_name.clone())
-            .or_default()
-            .insert(
-                func_name.clone(),
-                Instruction {
-                    from: source_endpoint,
-                    to: forward_endpoint,
-                },
-            );
-    }
-
-    let mut sequence_as_ids: Vec<SequenceStep> = Vec::with_capacity(sequence.len());
-    for (idx, s) in sequence.iter().enumerate() {
-        let dev_id: ObjectId = s
-            .device
-            .id
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| format!("sequence[{idx}] missing device ObjectId"))?;
-
-        let mod_id: ObjectId = s
-            .module
-            .id
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| format!("sequence[{idx}] missing module ObjectId"))?;
-
-        sequence_as_ids.push(SequenceStep {
-            device: dev_id,
-            module: mod_id,
-            func: s.func.clone(),
+        steps_vec.push(Step {
+            device_id: curr.device_id,
+            deployment_id: *deployment_id,
+            module: curr.module.clone(),
+            function_name: curr.func.clone(),
+            endpoint: curr.endpoint.clone(),
+            instructions,
+            mounts: curr.mounts.clone(),
         });
     }
 
     Ok(CreateSolutionResult {
-        full_manifest: deployments_to_devices,
-        sequence: sequence_as_ids,
+        full_manifest: FullManifest { sequence: steps_vec },
     })
 }
 

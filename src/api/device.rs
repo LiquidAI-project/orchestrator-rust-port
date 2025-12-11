@@ -257,10 +257,18 @@ pub fn get_device_platform_info() -> PlatformInfo {
 pub async fn process_discovered_devices(devices: Vec<DeviceDoc>) {
     for device in devices {
         // Check if device already exists
-        let exists = find_one::<DeviceDoc>(COLL_DEVICE, doc! { "name": &device.name })
-            .await
-            .unwrap_or(None)
-            .is_some();
+        // let exists = find_one::<DeviceDoc>(COLL_DEVICE, doc! { "name": &device.name })
+        //     .await
+        //     .unwrap_or(None)
+        //     .is_some();
+        let exists = match find_one::<DeviceDoc>(COLL_DEVICE, doc! { "name": &device.name }).await {
+            Ok(Some(_)) => true,
+            Ok(None)    => false,
+            Err(e)      => {
+                error!("During device discovery, find_one failed for device '{}': {:?}", device.name, e);
+                continue;
+            }
+        };
         if exists {
             continue;
         }
@@ -619,6 +627,18 @@ pub async fn register_device(info: web::Json<ManualDeviceRegistration>) -> Resul
         }]),
         health: None,
     };
+
+    let exists = match find_one::<DeviceDoc>(COLL_DEVICE, doc! { "name": &device.name }).await {
+        Ok(Some(_)) => true,
+        Ok(None)    => false,
+        Err(e)      => {
+            error!("During manual device registration, find_one failed for device '{}': {:?}", device.name, e);
+            return Ok(HttpResponse::InternalServerError().finish());
+        }
+    };
+    if exists {
+        return Ok(HttpResponse::NotModified().finish());
+    }
 
     if let Err(e) = insert_one(COLL_DEVICE, &device).await {
         error!("❌ Manual registration failed for '{}': {:?}", device.name, e);

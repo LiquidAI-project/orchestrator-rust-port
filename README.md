@@ -1,6 +1,8 @@
 # orchestrator-rust-port
 Rust version of https://github.com/LiquidAI-project/wasmiot-orchestrator . Goal is to convert the original orchestrator entirely to rust. Depends on https://github.com/LiquidAI-project/wasmiot-orchestrator-webgui for the user interface.
 
+This is not compatible with the original python version of the supervisor.
+
 
 ## Usage (development)
 
