@@ -21,7 +21,19 @@ pub struct DeploymentDoc {
     pub full_manifest: FullManifest,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<Vec<SequenceStep>>,
 }
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SequenceStep {
+    pub device: ObjectId,
+    pub module: ObjectId,
+    #[serde(rename = "func")]
+    pub function_name: String,
+}
+
 
 
 /// Stores the deployment sequence under "sequence" key
