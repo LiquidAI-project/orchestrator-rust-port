@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "create-deployment.schema.json",
+  "title": "CreateDeploymentRequest",
+  "description": "Request body for POST /file/manifest. Represents a deployment sequence submitted by a client (e.g. UI).",
+  "type": "object",
+  "required": ["name", "sequence"],
+  "properties": {
+    "_id": {
+      "type": "string",
+      "description": "Optional existing deployment id (ObjectId hex). Not used for POST create; used when resolving/updating in solver flows.",
+      "examples": ["64f0c9c2b4f3e2a5d8e1c0aa"]
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable deployment name."
+    },
+    "sequence": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Ordered list of steps. Each step must specify module + function. Device may be empty/any/null to let orchestrator choose a compatible device.",
+      "items": {
+        "$ref": "#/$defs/apiSequenceStep"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "apiSequenceStep": {
+      "type": "object",
+      "required": ["device", "module", "func"],
+      "properties": {
+        "device": {
+          "type": "string",
+          "description": "Device identifier: MongoDB ObjectId hex, OR device name, OR empty/any/null to auto-select.",
+          "examples": ["", "any", "null", "64f0c9c2b4f3e2a5d8e1c0ab", "raspi-01"]
+        },
+        "module": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Module identifier: MongoDB ObjectId hex OR module name.",
+          "examples": ["64f0c9c2b4f3e2a5d8e1c0ac", "camera-module"]
+        },
+        "func": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exported wasm function name to execute on this step.",
+          "examples": ["take_image", "classify"]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -246,7 +246,7 @@ async fn main() -> std::io::Result<()> {
             // ✅ DELETE /file/manifest
             // ✅ GET /file/manifest/{deployment_id}
             // ✅ POST /file/manifest/{deployment_id}
-            // ✅ PUT /file/manifest/{deployment_id}
+            // ❌ PUT /file/manifest/{deployment_id}
             // ✅ DELETE /file/manifest/{deployment_id}
             .service(web::resource("/file/manifest").name("/file/manifest")
                 .route(web::get().to(get_deployments)) // Get a list of all deployments/manifests

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "supervisor-log.schema.json",
+  "title": "SupervisorLogData",
+  "description": "Log entry sent from a supervisor to the orchestrator via POST /device/logs.",
+  "type": "object",
+  "required": [
+    "deviceIP",
+    "deviceName",
+    "funcName",
+    "loglevel",
+    "message",
+    "timestamp"
+  ],
+  "properties": {
+    "deviceIP": {
+      "type": "string",
+      "description": "IP address of the device sending the log."
+    },
+    "deviceName": {
+      "type": "string",
+      "description": "Human-readable name of the device."
+    },
+    "funcName": {
+      "type": "string",
+      "description": "Function or subsystem that emitted the log."
+    },
+    "loglevel": {
+      "type": "string",
+      "description": "Log level (e.g. INFO, DEBUG, WARN, ERROR)."
+    },
+    "message": {
+      "type": "string",
+      "description": "Log message content."
+    },
+    "request_id": {
+      "type": "string",
+      "description": "Optional request ID associated with this log entry."
+    },
+    "deployment_id": {
+      "type": "string",
+      "description": "Optional deployment ID associated with this log entry."
+    },
+    "module_name": {
+      "type": "string",
+      "description": "Optional module name associated with this log entry."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 timestamp when the log was created on the supervisor."
+    }
+  },
+  "additionalProperties": false
+}
